@@ -181,8 +181,8 @@ class XP(commands.Cog):
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
             
             curve = get_curve(guild.settings.xp_curve)
-            curr_lvl_req = curve.cumulative_xp_for_level(stats.level, self.BASE_XP, float(guild.settings.xp_multiplier))
-            next_lvl_req = curve.cumulative_xp_for_level(stats.level + 1, self.BASE_XP, float(guild.settings.xp_multiplier))
+            curr_lvl_req = curve.cumulative_xp_for_level(stats.level, XPService.BASE_XP, float(guild.settings.xp_multiplier))
+            next_lvl_req = curve.cumulative_xp_for_level(stats.level + 1, XPService.BASE_XP, float(guild.settings.xp_multiplier))
             
             progress_xp = stats.xp - curr_lvl_req
             needed_xp = next_lvl_req - curr_lvl_req
@@ -473,7 +473,7 @@ class XP(commands.Cog):
             
             # Calculate required XP for the target level
             curve = get_curve(settings.xp_curve)
-            target_xp = curve.cumulative_xp_for_level(level, self.BASE_XP, float(settings.xp_multiplier))
+            target_xp = curve.cumulative_xp_for_level(level, XPService.BASE_XP, float(settings.xp_multiplier))
             
             # Adjust user statistics
             stats = await DatabaseService.get_or_create_stats(session, guild_id, member.id)
@@ -545,7 +545,7 @@ class XP(commands.Cog):
                 # Re-evaluate level from their total XP
                 new_lvl = curve.level_for_xp(
                     xp=stats.xp,
-                    base_xp=self.BASE_XP,
+                    base_xp=XPService.BASE_XP,
                     multiplier=float(settings.xp_multiplier),
                     max_level=settings.xp_max_level
                 )
