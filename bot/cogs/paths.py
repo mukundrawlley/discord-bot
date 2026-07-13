@@ -120,6 +120,42 @@ class Paths(commands.Cog):
     path_group = app_commands.Group(name="path", description="Master Path management commands.")
     rank_group = app_commands.Group(name="rank", description="Path Rank progression rewards configuration.")
 
+    @rank_group.command(name="view", description="Displays current level and Path Rank details.")
+    @app_commands.describe(member="The member to view rank details for.")
+    async def rank_view_command(self, interaction: discord.Interaction, member: discord.Member | None = None) -> None:
+        """Checks level and path rank progression stats."""
+        target_member = member or interaction.user
+        if target_member.bot:
+            await interaction.response.send_message("Bots do not have Journey ranks.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild_id
+        async with get_db_session() as session:
+            stats = await DatabaseService.get_or_create_stats(session, guild_id, target_member.id)
+            path_name = "None"
+            rank_name = "None"
+            
+            if stats.master_path:
+                path_name = stats.master_path.name
+                
+                # Fetch ranks
+                ranks_res = await session.execute(
+                    select(PathRank)
+                    .filter_by(path_id=stats.master_path_id)
+                    .filter(PathRank.required_level <= stats.level)
+                    .order_by(PathRank.required_level.desc())
+                )
+                highest_rank = ranks_res.scalars().first()
+                if highest_rank:
+                    rank_name = highest_rank.display_name
+                    
+            await interaction.response.send_message(
+                f"🏆 **{target_member.display_name}**'s Rank Info:\n"
+                f"• **Level**: {stats.level}\n"
+                f"• **Master Path**: {path_name}\n"
+                f"• **Path Rank**: {rank_name}"
+            )
+
     @path_group.command(name="list", description="Lists all Master Paths configured in the server.")
     async def path_list_command(self, interaction: discord.Interaction) -> None:
         """Displays all Master Paths."""
