@@ -1,0 +1,28 @@
+# Credentials and Environment
+.env
+.env.local
+
+# Databases and Local Storage
+journey.db
+journey.db-journal
+journey.db-shm
+journey.db-wal
+
+# Python Cache and Bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE settings
+.vscode/
+.idea/
