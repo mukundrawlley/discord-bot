@@ -5,6 +5,7 @@ import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.future import select
+from sqlalchemy import text
 
 from bot.config.settings import settings
 from bot.database.base import Base
@@ -62,7 +63,7 @@ class JourneyBot(commands.Bot):
                 for col_name, sql_def in new_cols:
                     if col_name not in columns:
                         logger.info(f"Adding missing column {col_name} to guild_settings...")
-                        connection.execute(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}")
+                        connection.execute(text(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}"))
             
             await conn.run_sync(check_and_add_columns)
         logger.info("Database schema integrity check completed.")
