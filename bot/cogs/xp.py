@@ -63,16 +63,17 @@ class XP(commands.Cog):
             
             if leveled_up:
                 logger.info(f"User {message.author} leveled up: Level {old_lvl} -> {new_lvl} in guild {guild_id}.")
-                await self._handle_level_up(message, session, settings, new_lvl)
+                await self._handle_level_up(message, session, settings, old_lvl, new_lvl)
 
     async def _handle_level_up(
         self,
         message: discord.Message,
         session: AsyncSession,
         settings: GuildSettings,
+        old_level: int,
         new_level: int
     ) -> None:
-        """Handles role rewards allocation and level-up message announcement."""
+        """Handles role rewards allocation, level-up, and rank-up message announcements."""
         member = message.author
         guild = message.guild
         
@@ -80,11 +81,13 @@ class XP(commands.Cog):
         stats = await DatabaseService.get_or_create_stats(session, guild.id, member.id)
         path_name = "None"
         rank_name = "None"
+        highest_rank = None
+        old_highest_rank = None
         
         if stats.master_path:
             path_name = stats.master_path.name
             
-            # Fetch highest earned rank name
+            # Fetch highest earned rank name at new level
             from bot.models.rank import PathRank
             ranks_res = await session.execute(
                 select(PathRank)
@@ -95,6 +98,15 @@ class XP(commands.Cog):
             highest_rank = ranks_res.scalars().first()
             if highest_rank:
                 rank_name = highest_rank.display_name
+                
+            # Fetch highest earned rank name at old level
+            old_ranks_res = await session.execute(
+                select(PathRank)
+                .filter_by(path_id=stats.master_path_id)
+                .filter(PathRank.required_level <= old_level)
+                .order_by(PathRank.required_level.desc())
+            )
+            old_highest_rank = old_ranks_res.scalars().first()
                 
         # 2. Level Up Message announcement
         if settings.level_msg_enabled:
@@ -132,6 +144,42 @@ class XP(commands.Cog):
                     msg_text = f"{content_payload}{formatted_text}".strip()
                     if settings.level_msg_image_url:
                         msg_text += f"\n{settings.level_msg_image_url}"
+                    await channel.send(content=msg_text)
+
+        # 2.5. Rank Up Message announcement
+        if settings.rank_msg_enabled and highest_rank and (not old_highest_rank or highest_rank.id != old_highest_rank.id):
+            channel = guild.get_channel(settings.rank_msg_channel_id) if settings.rank_msg_channel_id else message.channel
+            if channel and isinstance(channel, discord.TextChannel):
+                formatted_rank_text = format_level_up_message(
+                    template=settings.rank_msg_template,
+                    member=member,
+                    level=new_level,
+                    xp=stats.xp,
+                    path_name=path_name,
+                    rank_name=rank_name
+                )
+                
+                # Mentions checking
+                content_payload = ""
+                if settings.rank_msg_mention_user:
+                    content_payload += f"{member.mention} "
+                if settings.rank_msg_mention_role_id:
+                    role_mention = guild.get_role(settings.rank_msg_mention_role_id)
+                    if role_mention:
+                        content_payload += f"{role_mention.mention} "
+                
+                if settings.rank_msg_embed:
+                    embed = discord.Embed(
+                        description=formatted_rank_text,
+                        color=discord.Color.gold()
+                    )
+                    if settings.rank_msg_image_url:
+                        embed.set_image(url=settings.rank_msg_image_url)
+                    await channel.send(content=content_payload.strip(), embed=embed)
+                else:
+                    msg_text = f"{content_payload}{formatted_rank_text}".strip()
+                    if settings.rank_msg_image_url:
+                        msg_text += f"\n{settings.rank_msg_image_url}"
                     await channel.send(content=msg_text)
 
         # 3. Role Rewards Adjustments
@@ -216,7 +264,14 @@ class XP(commands.Cog):
         msg_embed="Announce in an Embed layout.",
         msg_image="URL link to an image/GIF attachment.",
         msg_mention_user="Ping user on level up announcement.",
-        msg_mention_role="Role to ping on level up announcements."
+        msg_mention_role="Role to ping on level up announcements.",
+        rank_msg_enabled="Enable rank-up message alerts.",
+        rank_msg_template="Custom rank-up message template text.",
+        rank_msg_channel="Channel for rank-up announcements.",
+        rank_msg_embed="Announce rank-ups in an Embed layout.",
+        rank_msg_image="URL link to an image/GIF for rank-up.",
+        rank_msg_mention_user="Ping user on rank-up announcement.",
+        rank_msg_mention_role="Role to ping on rank-up announcements."
     )
     @app_commands.choices(
         mode=[
@@ -253,7 +308,14 @@ class XP(commands.Cog):
         msg_embed: bool | None = None,
         msg_image: str | None = None,
         msg_mention_user: bool | None = None,
-        msg_mention_role: discord.Role | None = None
+        msg_mention_role: discord.Role | None = None,
+        rank_msg_enabled: bool | None = None,
+        rank_msg_template: str | None = None,
+        rank_msg_channel: discord.TextChannel | None = None,
+        rank_msg_embed: bool | None = None,
+        rank_msg_image: str | None = None,
+        rank_msg_mention_user: bool | None = None,
+        rank_msg_mention_role: discord.Role | None = None
     ) -> None:
         """Updates server-specific settings parameters for XP leveling."""
         await interaction.response.defer(ephemeral=True)
@@ -299,6 +361,21 @@ class XP(commands.Cog):
                 settings.level_msg_mention_user = msg_mention_user
             if msg_mention_role is not None:
                 settings.level_msg_mention_role_id = msg_mention_role.id
+
+            if rank_msg_enabled is not None:
+                settings.rank_msg_enabled = rank_msg_enabled
+            if rank_msg_template is not None:
+                settings.rank_msg_template = rank_msg_template
+            if rank_msg_channel is not None:
+                settings.rank_msg_channel_id = rank_msg_channel.id
+            if rank_msg_embed is not None:
+                settings.rank_msg_embed = rank_msg_embed
+            if rank_msg_image is not None:
+                settings.rank_msg_image_url = rank_msg_image
+            if rank_msg_mention_user is not None:
+                settings.rank_msg_mention_user = rank_msg_mention_user
+            if rank_msg_mention_role is not None:
+                settings.rank_msg_mention_role_id = rank_msg_mention_role.id
 
             # Sync roles retroactively if rank role mode or base path role keeping policy is updated
             if rank_mode is not None or keep_path_role is not None:
@@ -365,7 +442,7 @@ class XP(commands.Cog):
             )
             
             if leveled_up:
-                await self._handle_level_up(interaction.message or message_mock_from_interaction(interaction, member), session, settings, new_lvl)
+                await self._handle_level_up(interaction.message or message_mock_from_interaction(interaction, member), session, settings, old_lvl, new_lvl)
 
         await interaction.followup.send(
             f"✅ Added {amount:,} XP to {member.mention}. Level: {old_lvl} ➡️ {new_lvl}.",

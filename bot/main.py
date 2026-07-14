@@ -41,6 +41,32 @@ class JourneyBot(commands.Bot):
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database schemas initialized.")
 
+        # Self-healing schema modifications: dynamically add missing columns to guild_settings
+        logger.info("Verifying database schema integrity...")
+        async with engine.begin() as conn:
+            from sqlalchemy import inspect
+            def check_and_add_columns(connection):
+                inspector = inspect(connection)
+                columns = [col['name'] for col in inspector.get_columns("guild_settings")]
+                
+                new_cols = [
+                    ("rank_msg_enabled", "BOOLEAN DEFAULT TRUE"),
+                    ("rank_msg_template", "TEXT DEFAULT 'Congratulations {user}, you achieved the rank of {rank} on the {path} path!'"),
+                    ("rank_msg_channel_id", "BIGINT"),
+                    ("rank_msg_embed", "BOOLEAN DEFAULT FALSE"),
+                    ("rank_msg_image_url", "VARCHAR(256)"),
+                    ("rank_msg_mention_user", "BOOLEAN DEFAULT TRUE"),
+                    ("rank_msg_mention_role_id", "BIGINT")
+                ]
+                
+                for col_name, sql_def in new_cols:
+                    if col_name not in columns:
+                        logger.info(f"Adding missing column {col_name} to guild_settings...")
+                        connection.execute(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}")
+            
+            await conn.run_sync(check_and_add_columns)
+        logger.info("Database schema integrity check completed.")
+
         # 2. Load Cogs
         logger.info("Loading extensions...")
         cogs = ["general", "xp", "paths", "profile", "leaderboards"]

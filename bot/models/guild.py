@@ -69,6 +69,19 @@ class GuildSettings(Base):
     level_msg_mention_user: Mapped[bool] = mapped_column(Boolean, default=True)
     level_msg_mention_role_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     
+    # Rank message configuration
+    rank_msg_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    rank_msg_template: Mapped[str] = mapped_column(
+        Text, 
+        default="Congratulations {user}, you achieved the rank of {rank} on the {path} path!"
+    )
+    rank_msg_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rank_msg_embed: Mapped[bool] = mapped_column(Boolean, default=False)
+    rank_msg_image_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    rank_msg_mention_user: Mapped[bool] = mapped_column(Boolean, default=True)
+    rank_msg_mention_role_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    
     # Anti-spam configuration
     anti_spam_min_length: Mapped[int] = mapped_column(Integer, default=1)
     anti_spam_block_emojis: Mapped[bool] = mapped_column(Boolean, default=True)
