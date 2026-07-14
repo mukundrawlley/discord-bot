@@ -469,7 +469,7 @@ class Paths(commands.Cog):
         path: str,
         level: int,
         role: discord.Role,
-        name: str
+        name: str | None = None
     ) -> None:
         """Registers a rank progression reward milestone."""
         if level < 1:
@@ -478,6 +478,7 @@ class Paths(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
+        rank_name = name or role.name
         
         async with get_db_session() as session:
             target_path = await PathService.get_path_by_name(session, guild_id, path)
@@ -499,12 +500,12 @@ class Paths(commands.Cog):
                 path_id=target_path.id,
                 required_level=level,
                 discord_role_id=role.id,
-                display_name=name
+                display_name=rank_name
             )
             session.add(rank)
             await session.flush()
             
-        await interaction.followup.send(f"✅ Added rank reward **{name}** (Level {level}) to path {target_path.name}.", ephemeral=True)
+        await interaction.followup.send(f"✅ Added rank reward **{rank_name}** (Level {level}) to path {target_path.name}.", ephemeral=True)
 
     @rank_group.command(name="remove", description="[Admin Only] Removes a rank level reward from a path.")
     @app_commands.default_permissions(manage_guild=True)
