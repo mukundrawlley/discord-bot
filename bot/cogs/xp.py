@@ -300,6 +300,39 @@ class XP(commands.Cog):
             if msg_mention_role is not None:
                 settings.level_msg_mention_role_id = msg_mention_role.id
 
+            # Sync roles retroactively if rank role mode or base path role keeping policy is updated
+            if rank_mode is not None or keep_path_role is not None:
+                # Fetch all user stats with master_path_id
+                users_res = await session.execute(
+                    select(UserGuildStats)
+                    .filter_by(guild_id=guild_id)
+                    .filter(UserGuildStats.master_path_id.isnot(None))
+                )
+                all_users = list(users_res.scalars())
+                
+                for stats in all_users:
+                    roles_to_add, roles_to_remove = await PathService.evaluate_roles_for_level(
+                        session, stats, stats.level, settings
+                    )
+                    member_obj = interaction.guild.get_member(stats.user_id)
+                    if member_obj:
+                        add_objs = [interaction.guild.get_role(rid) for rid in roles_to_add if interaction.guild.get_role(rid)]
+                        remove_objs = [interaction.guild.get_role(rid) for rid in roles_to_remove if interaction.guild.get_role(rid)]
+                        
+                        remove_objs = [r for r in remove_objs if r in member_obj.roles]
+                        if remove_objs:
+                            try:
+                                await member_obj.remove_roles(*remove_objs, reason="Journey Rank Settings Update")
+                            except discord.Forbidden:
+                                pass
+                                
+                        add_objs = [r for r in add_objs if r not in member_obj.roles]
+                        if add_objs:
+                            try:
+                                await member_obj.add_roles(*add_objs, reason="Journey Rank Settings Update")
+                            except discord.Forbidden:
+                                pass
+
             await session.flush()
             
         await interaction.followup.send("✅ Successfully updated server XP & Leveling settings.", ephemeral=True)

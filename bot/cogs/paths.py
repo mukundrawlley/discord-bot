@@ -600,7 +600,38 @@ class Paths(commands.Cog):
             session.add(rank)
             await session.flush()
             
-        await interaction.followup.send(f"✅ Added rank reward **{rank_name}** (Level {level}) to path {target_path.name}.", ephemeral=True)
+            # Retroactively apply new rank/role to all users currently at or above the milestone level
+            users_res = await session.execute(
+                select(UserGuildStats)
+                .filter_by(guild_id=guild_id, master_path_id=target_path.id)
+                .filter(UserGuildStats.level >= level)
+            )
+            affected_users = list(users_res.scalars())
+            
+            for stats in affected_users:
+                roles_to_add, roles_to_remove = await PathService.evaluate_roles_for_level(
+                    session, stats, stats.level, settings
+                )
+                member_obj = interaction.guild.get_member(stats.user_id)
+                if member_obj:
+                    add_objs = [interaction.guild.get_role(rid) for rid in roles_to_add if interaction.guild.get_role(rid)]
+                    remove_objs = [interaction.guild.get_role(rid) for rid in roles_to_remove if interaction.guild.get_role(rid)]
+                    
+                    remove_objs = [r for r in remove_objs if r in member_obj.roles]
+                    if remove_objs:
+                        try:
+                            await member_obj.remove_roles(*remove_objs, reason="Retroactive Rank Reward Update")
+                        except discord.Forbidden:
+                            pass
+                            
+                    add_objs = [r for r in add_objs if r not in member_obj.roles]
+                    if add_objs:
+                        try:
+                            await member_obj.add_roles(*add_objs, reason="Retroactive Rank Reward Update")
+                        except discord.Forbidden:
+                            pass
+                            
+        await interaction.followup.send(f"✅ Added rank reward **{rank_name}** (Level {level}) to path {target_path.name} and updated affected members.", ephemeral=True)
 
     @rank_group.command(name="remove", description="[Admin Only] Removes a rank level reward from a path.")
     @app_commands.default_permissions(manage_guild=True)

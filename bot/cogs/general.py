@@ -22,8 +22,8 @@ class General(commands.Cog):
         user_cmds = (
             "**`/profile [member]`** - View your/another user's rank, level, XP, and path details.\n"
             "**`/path choose [path]`** - Join a specific Master Path.\n"
-            "**`/xp [member]`** - View leveling stats.\n"
-            "**`/rank [member]`** - Shortcut to view path rank status.\n"
+            "**`/xp view [member]`** - View leveling stats.\n"
+            "**`/rank view [member]`** - Shortcut to view path rank status.\n"
             "**`/leaderboard [type] [filter]`** - Display guild leaderboards.\n"
             "**`/help`** - Shows this menu."
         )
