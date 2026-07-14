@@ -534,5 +534,21 @@ class Paths(commands.Cog):
             
         await interaction.followup.send(f"✅ Removed Level {level} rank reward from path {target_path.name}.", ephemeral=True)
 
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        """Cog-level error handler for slash commands."""
+        logger.error(f"Error in Paths command: {error}", exc_info=error)
+        try:
+            if isinstance(error, app_commands.CommandInvokeError):
+                error_msg = f"Database/Internal Error: {error.original}"
+            else:
+                error_msg = str(error)
+                
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ An error occurred: `{error_msg}`", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ An error occurred: `{error_msg}`", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Failed to send command error message: {e}")
+
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Paths(bot))

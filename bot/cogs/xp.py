@@ -583,6 +583,23 @@ class XP(commands.Cog):
             ephemeral=True
         )
 
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        """Cog-level error handler for slash commands."""
+        logger.error(f"Error in XP command: {error}", exc_info=error)
+        try:
+            if isinstance(error, app_commands.AppCommandError):
+                if isinstance(error, app_commands.CommandInvokeError):
+                    error_msg = f"Database/Internal Error: {error.original}"
+                else:
+                    error_msg = str(error)
+                    
+                if interaction.response.is_done():
+                    await interaction.followup.send(f"❌ An error occurred: `{error_msg}`", ephemeral=True)
+                else:
+                    await interaction.response.send_message(f"❌ An error occurred: `{error_msg}`", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Failed to send command error message: {e}")
+
 # Helper mock for admin forced updates if interaction.message is unavailable
 class FakeMessage:
     def __init__(self, guild, author, channel):

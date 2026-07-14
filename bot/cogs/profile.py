@@ -70,9 +70,16 @@ class Profile(commands.Cog):
             level_xp_needed = next_lvl_req - curr_lvl_req
             
             # 4. Construct beautiful Embed
+            embed_color = discord.Color.blurple()
+            if stats.master_path and stats.master_path.color_hex:
+                try:
+                    embed_color = discord.Color.from_str(stats.master_path.color_hex)
+                except ValueError:
+                    pass
+
             embed = discord.Embed(
                 title=f"✨ {target_member.display_name}'s Journey Profile ✨",
-                color=stats.master_path.color if (stats.master_path and stats.master_path.color) else discord.Color.blurple()
+                color=embed_color
             )
             embed.set_thumbnail(url=target_member.display_avatar.url)
             
@@ -156,6 +163,23 @@ class Profile(commands.Cog):
                 content=f"Successfully reset {member.mention}'s leveling stats and Master Path selector to default.{removed_roles_str}",
                 ephemeral=True
             )
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        """Cog-level error handler for slash commands."""
+        logger.error(f"Error in Profile command: {error}", exc_info=error)
+        try:
+            # Extract root cause if it is a CommandInvokeError
+            if isinstance(error, app_commands.CommandInvokeError):
+                error_msg = f"Database/Internal Error: {error.original}"
+            else:
+                error_msg = str(error)
+                
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ An error occurred: `{error_msg}`", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ An error occurred: `{error_msg}`", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Failed to send command error message: {e}")
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Profile(bot))
