@@ -71,11 +71,8 @@ class Profile(commands.Cog):
             
             # 4. Construct beautiful Embed
             embed_color = discord.Color.blurple()
-            if stats.master_path and stats.master_path.color_hex:
-                try:
-                    embed_color = discord.Color.from_str(stats.master_path.color_hex)
-                except ValueError:
-                    pass
+            if stats.master_path and stats.master_path.color is not None:
+                embed_color = discord.Color(stats.master_path.color)
 
             embed = discord.Embed(
                 title=f"✨ {target_member.display_name}'s Journey Profile ✨",

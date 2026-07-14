@@ -385,6 +385,101 @@ class Paths(commands.Cog):
                             
         await interaction.followup.send(f"✅ Deleted Master Path and reset path variables for {len(affected_users)} members.", ephemeral=True)
 
+    @path_group.command(name="remove-user", description="[Admin Only] Removes the Master Path from a member.")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(member="The member to remove the path from.")
+    async def path_remove_user_command(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        """Removes a user's Master Path selection and revokes all path/rank roles."""
+        if member.bot:
+            await interaction.response.send_message("❌ Bots do not have Master Paths.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild_id
+        
+        async with get_db_session() as session:
+            guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            settings = guild.settings
+            
+            # Check if user has path
+            stats = await DatabaseService.get_or_create_stats(session, guild_id, member.id)
+            if not stats.master_path_id:
+                await interaction.followup.send(f"❌ {member.mention} does not have an active Master Path.", ephemeral=True)
+                return
+                
+            old_path = stats.master_path.name if stats.master_path else "Unknown"
+            
+            # assign_path with None removes it
+            to_add, to_remove = await PathService.assign_path(
+                session, settings, member.id, None
+            )
+            
+            # Apply Discord additions/removals
+            remove_objs = [interaction.guild.get_role(rid) for rid in to_remove if interaction.guild.get_role(rid)]
+            remove_objs = [r for r in remove_objs if r in member.roles]
+            if remove_objs:
+                try:
+                    await member.remove_roles(*remove_objs, reason="Journey Path Removed by Admin")
+                except discord.Forbidden:
+                    logger.warning(f"Could not remove roles {remove_objs} (Forbidden).")
+
+            await session.flush()
+            
+        await interaction.followup.send(f"✅ Successfully removed path **{old_path}** from {member.mention}.", ephemeral=True)
+
+    @path_group.command(name="change-user", description="[Admin Only] Changes the Master Path for a member.")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(member="The member to change path for.", path="The new path name.")
+    @app_commands.autocomplete(path=_path_autocomplete)
+    async def path_change_user_command(self, interaction: discord.Interaction, member: discord.Member, path: str) -> None:
+        """Forces a Master Path change for a user and syncs roles."""
+        if member.bot:
+            await interaction.response.send_message("❌ Bots do not have Master Paths.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild_id
+        
+        async with get_db_session() as session:
+            guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            settings = guild.settings
+            
+            # Resolve path object
+            target_path = await PathService.get_path_by_name(session, guild_id, path)
+            if not target_path or not target_path.enabled:
+                await interaction.followup.send(f"❌ Master Path '{path}' was not found or is disabled.", ephemeral=True)
+                return
+                
+            to_add, to_remove = await PathService.assign_path(
+                session, settings, member.id, target_path.id
+            )
+            
+            # Apply Discord additions/removals
+            add_objs = [interaction.guild.get_role(rid) for rid in to_add if interaction.guild.get_role(rid)]
+            remove_objs = [interaction.guild.get_role(rid) for rid in to_remove if interaction.guild.get_role(rid)]
+            
+            remove_objs = [r for r in remove_objs if r in member.roles]
+            if remove_objs:
+                try:
+                    await member.remove_roles(*remove_objs, reason="Journey Path Changed by Admin")
+                except discord.Forbidden:
+                    logger.warning(f"Could not remove roles {remove_objs} (Forbidden).")
+                    
+            add_objs = [r for r in add_objs if r not in member.roles]
+            if add_objs:
+                try:
+                    await member.add_roles(*add_objs, reason="Journey Path Changed by Admin")
+                except discord.Forbidden:
+                    await interaction.followup.send(
+                        f"⚠️ Changed path to **{target_path.name}**, but could not award the role. "
+                        "Please verify the bot has permissions to manage roles.",
+                        ephemeral=True
+                    )
+                    return
+            await session.flush()
+            
+        await interaction.followup.send(f"✅ Successfully set {member.mention}'s Master Path to **{target_path.name}**.", ephemeral=True)
+
     @path_group.command(name="role", description="[Admin Only] Queries or updates role associated with a path.")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(path="Path name.", role="Associated Discord role.")
