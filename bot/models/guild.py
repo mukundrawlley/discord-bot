@@ -8,7 +8,7 @@ class Guild(Base):
     
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     joined_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc)
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
     )
     
     settings = relationship(

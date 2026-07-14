@@ -29,7 +29,7 @@ class LeaderboardSnapshot(Base):
     
     snapshot_type: Mapped[str] = mapped_column(String(10)) # 'daily', 'weekly', 'monthly'
     created_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc)
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
     )
     data: Mapped[dict] = mapped_column(JSON) # Snapshot data e.g. [{"user_id": 123, "xp": 1000, "rank": 1}]
     
