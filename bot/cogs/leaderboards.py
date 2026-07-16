@@ -2,11 +2,46 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
+import unicodedata
 
 from bot.database.connection import get_db_session
 from bot.services.leaderboard_service import LeaderboardService
 
 logger = logging.getLogger("Journey.LeaderboardCog")
+
+def get_char_width(char: str) -> int:
+    o = ord(char)
+    if 32 <= o <= 126:
+        return 1
+    status = unicodedata.east_asian_width(char)
+    if status in ('W', 'F', 'A'):
+        return 2
+    cat = unicodedata.category(char)
+    if cat.startswith('S') or o > 0xffff:
+        return 2
+    return 1
+
+def get_visual_width(s: str) -> int:
+    return sum(get_char_width(c) for c in s)
+
+def pad_visual(s: str, target_width: int) -> str:
+    total_w = get_visual_width(s)
+    if total_w <= target_width:
+        return s + ' ' * (target_width - total_w)
+    
+    limit = target_width - 3
+    current_width = 0
+    truncated_chars = []
+    for char in s:
+        char_w = get_char_width(char)
+        if current_width + char_w > limit:
+            break
+        truncated_chars.append(char)
+        current_width += char_w
+        
+    truncated_str = "".join(truncated_chars) + "..."
+    final_w = get_visual_width(truncated_str)
+    return truncated_str + ' ' * (target_width - final_w)
 
 def format_leaderboard_table(users: list, start_rank: int, timeframe_val: str, interaction: discord.Interaction) -> str:
     if not users:
@@ -22,9 +57,8 @@ def format_leaderboard_table(users: list, start_rank: int, timeframe_val: str, i
         member = interaction.guild.get_member(stats.user_id)
         name = member.display_name if member else f"User {stats.user_id}"
         
-        # Truncate long display names to keep table aligned
-        if len(name) > 19:
-            name = name[:16] + "..."
+        # Use visual padding for aligned names
+        padded_name = pad_visual(name, 19)
             
         if timeframe_val == "daily":
             score = stats.xp_daily
@@ -35,9 +69,10 @@ def format_leaderboard_table(users: list, start_rank: int, timeframe_val: str, i
         else:
             score = stats.xp
             
-        rows.append(f"#{rank:<4} | {name:<19} | Lvl {stats.level:<2} | {score:,} XP")
+        rows.append(f"#{rank:<4} | {padded_name} | Lvl {stats.level:<2} | {score:,} XP")
         
     return "```text\n" + header + separator + "\n".join(rows) + "\n```"
+
 
 class LeaderboardView(discord.ui.View):
     def __init__(
