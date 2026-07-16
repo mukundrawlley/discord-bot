@@ -11,12 +11,15 @@ logger = logging.getLogger("Journey.LeaderboardCog")
 
 def get_char_width(char: str) -> int:
     o = ord(char)
+    cat = unicodedata.category(char)
+    # Zero-width combining marks, controls, and formatting characters
+    if cat.startswith('M') or cat.startswith('C'):
+        return 0
     if 32 <= o <= 126:
         return 1
     status = unicodedata.east_asian_width(char)
     if status in ('W', 'F', 'A'):
         return 2
-    cat = unicodedata.category(char)
     if cat.startswith('S') or o > 0xffff:
         return 2
     return 1
