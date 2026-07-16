@@ -101,13 +101,13 @@ def formatLeaderboardRow(stats: dict, rank: int, is_caller: bool, timeframe_val:
     member = interaction.guild.get_member(stats["user_id"])
     name = member.display_name if member else f"User {stats['user_id']}"
     
-    # Target column widths: PLAYER_WIDTH = 22, LEVEL_WIDTH = 9, SCORE_WIDTH = 12
+    # Target column widths: PLAYER_WIDTH = 20, LEVEL_WIDTH = 9, SCORE_WIDTH = 12
     name_width_val = get_visual_width(name)
     if name_width_val > 20:
         truncated = truncateUsername(name, 20)
-        name_padded = " " + padColumn(truncated, 20, 'left') + " "
+        name_padded = padColumn(truncated, 20, 'left')
     else:
-        name_padded = " " + padColumn(name, 20, 'left') + " "
+        name_padded = padColumn(name, 20, 'left')
         
     lvl_padded = centerText(f"Lv {stats['level']}", 9)
     
@@ -120,10 +120,11 @@ def formatLeaderboardRow(stats: dict, rank: int, is_caller: bool, timeframe_val:
     else:
         score = stats["xp"]
         
-    score_padded = padColumn(formatXP(score), 11, 'right') + " "
+    score_padded = padColumn(formatXP(score), 12, 'right')
     rank_padded = format_rank_col(rank, is_caller)
     
-    row_content = f"|{rank_padded}|{name_padded}|{lvl_padded}|{score_padded}|"
+    # Borderless row with 2 spaces separator
+    row_content = f"{rank_padded}  {name_padded}  {lvl_padded}  {score_padded}"
     
     if is_caller:
         return f"\u001b[1;35m{row_content}\u001b[0m"
@@ -140,15 +141,8 @@ def generateTable(users: list, start_rank: int, timeframe_val: str, interaction:
     if not users:
         return "No players have entered the leaderboard yet."
         
-    RK_WIDTH = 6
-    PLAYER_WIDTH = 22
-    LEVEL_WIDTH = 9
-    SCORE_WIDTH = 12
-    
-    border = f"+{'-' * RK_WIDTH}+{'-' * PLAYER_WIDTH}+{'-' * LEVEL_WIDTH}+{'-' * SCORE_WIDTH}+"
-    header = f"|{' Rank ':^6}|{' Player':<22}|{centerText('Level', 9)}|{padColumn('Score', 11, 'right')} |"
-    
-    colored_border = f"\u001b[1;30m{border}\u001b[0m"
+    # Borderless header with 2 spaces separator
+    header = f"{'Rank':^6}  {'Player':<20}  {centerText('Level', 9)}  {padColumn('Score', 12, 'right')}"
     colored_header = f"\u001b[1;37m{header}\u001b[0m"
     
     rows = []
@@ -158,7 +152,7 @@ def generateTable(users: list, start_rank: int, timeframe_val: str, interaction:
         row_text = formatLeaderboardRow(stats, rank, is_caller, timeframe_val, interaction)
         rows.append(row_text)
         
-    return "```ansi\n" + colored_border + "\n" + colored_header + "\n" + colored_border + "\n" + "\n".join(rows) + "\n" + colored_border + "\n```"
+    return "```ansi\n" + colored_header + "\n" + "\n".join(rows) + "\n```"
 
 
 class LeaderboardView(discord.ui.View):
