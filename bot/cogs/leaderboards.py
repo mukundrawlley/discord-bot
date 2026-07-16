@@ -320,19 +320,11 @@ class Leaderboards(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="leaderboard", description="Displays the leaderboard rankings.")
-    @app_commands.describe(
-        type="The type of leaderboard to display.",
-        timeframe="The timeframe filter (applicable to XP)."
-    )
+    leaderboard = app_commands.Group(name="leaderboard", description="View server leaderboards.")
+
+    @leaderboard.command(name="xp", description="Displays the XP leaderboard rankings.")
+    @app_commands.describe(timeframe="The timeframe filter.")
     @app_commands.choices(
-        type=[
-            app_commands.Choice(name="XP", value="xp"),
-            app_commands.Choice(name="Level", value="level"),
-            app_commands.Choice(name="Bias Coins (Future)", value="coins"),
-            app_commands.Choice(name="Gacha Spins (Future)", value="spins"),
-            app_commands.Choice(name="Characters (Future)", value="characters")
-        ],
         timeframe=[
             app_commands.Choice(name="All Time", value="all_time"),
             app_commands.Choice(name="Monthly", value="monthly"),
@@ -340,27 +332,30 @@ class Leaderboards(commands.Cog):
             app_commands.Choice(name="Daily", value="daily")
         ]
     )
-    async def leaderboard_command(
+    async def leaderboard_xp(
         self,
         interaction: discord.Interaction,
-        type: app_commands.Choice[str],
         timeframe: app_commands.Choice[str] | None = None
     ) -> None:
-        """Displays user standings in the guild. Fetches statistical ranking sheets."""
-        board_type = type.value
-        
-        if board_type not in ("xp", "level"):
-            await interaction.response.send_message(
-                content=f"🚫 The **{type.name}** leaderboard is **Not Available** in Phase 1.",
-                ephemeral=True
-            )
-            return
+        """Displays user standings in XP rankings."""
+        timeframe_val = timeframe.value if timeframe else "all_time"
+        title_timeframe = timeframe.name if timeframe else "All Time"
+        await self._show_leaderboard(interaction, timeframe_val, title_timeframe)
 
-        if board_type == "level":
-            timeframe_val = "level"
-        else:
-            timeframe_val = timeframe.value if timeframe else "all_time"
+    @leaderboard.command(name="level", description="Displays the Level leaderboard rankings.")
+    async def leaderboard_level(
+        self,
+        interaction: discord.Interaction
+    ) -> None:
+        """Displays user standings in Lifetime Levels."""
+        await self._show_leaderboard(interaction, "level", "Lifetime Level")
 
+    async def _show_leaderboard(
+        self,
+        interaction: discord.Interaction,
+        timeframe_val: str,
+        title_timeframe: str
+    ) -> None:
         await interaction.response.defer()
         guild_id = interaction.guild_id
 
@@ -394,11 +389,6 @@ class Leaderboards(commands.Cog):
                 await interaction.followup.send("❌ Unable to load leaderboard.", ephemeral=True)
                 return
 
-        if timeframe_val == "level":
-            title_timeframe = "Lifetime Level"
-        else:
-            title_timeframe = timeframe.name if timeframe else "All Time"
-            
         table_str = generateTable(top_users, 1, timeframe_val, interaction, interaction.user.id)
 
         # User Standing Block formatting
