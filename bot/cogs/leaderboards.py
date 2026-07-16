@@ -49,74 +49,122 @@ def pad_visual(s: str, target_width: int) -> str:
 
 def format_rank_col(rank: int, is_caller: bool) -> str:
     if is_caller:
-        return f"★  {rank:<2}"
+        if rank < 10:
+            return f"★{rank} "
+        else:
+            return f"★{rank}"
     if rank == 1:
-        return f"🥇 {rank:<2}"
+        return "🥇1 "
     elif rank == 2:
-        return f"🥈 {rank:<2}"
+        return "🥈2 "
     elif rank == 3:
-        return f"🥉 {rank:<2}"
+        return "🥉3 "
     else:
-        return f"   {rank:<2}"
+        if rank < 10:
+            return f" {rank}  "
+        else:
+            return f" {rank} "
 
-def format_leaderboard_table(users: list, start_rank: int, timeframe_val: str, interaction: discord.Interaction, caller_id: int) -> str:
+def formatXP(score: int) -> str:
+    return f"{score:,} XP"
+
+def truncateUsername(name: str, max_len: int) -> str:
+    limit = max_len - 3
+    current_width = 0
+    truncated_chars = []
+    for char in name:
+        char_w = get_char_width(char)
+        if current_width + char_w > limit:
+            break
+        truncated_chars.append(char)
+        current_width += char_w
+    return "".join(truncated_chars) + "..."
+
+def padColumn(text: str, width: int, align: str = 'left') -> str:
+    total_w = get_visual_width(text)
+    if total_w >= width:
+        return text
+    if align == 'right':
+        return ' ' * (width - total_w) + text
+    else:
+        return text + ' ' * (width - total_w)
+
+def centerText(text: str, width: int) -> str:
+    total_w = get_visual_width(text)
+    if total_w >= width:
+        return text
+    left_spaces = (width - total_w) // 2
+    right_spaces = width - total_w - left_spaces
+    return ' ' * left_spaces + text + ' ' * right_spaces
+
+def formatLeaderboardRow(stats: dict, rank: int, is_caller: bool, timeframe_val: str, interaction: discord.Interaction) -> str:
+    member = interaction.guild.get_member(stats["user_id"])
+    name = member.display_name if member else f"User {stats['user_id']}"
+    
+    # Target column widths: PLAYER_WIDTH = 22, LEVEL_WIDTH = 8, SCORE_WIDTH = 13
+    name_width_val = get_visual_width(name)
+    if name_width_val > 21:
+        truncated = truncateUsername(name, 21)
+        name_padded = " " + padColumn(truncated, 21, 'left')
+    else:
+        name_padded = " " + padColumn(name, 21, 'left')
+        
+    lvl_padded = centerText(f"Lv.{stats['level']}", 8)
+    
+    if timeframe_val == "daily":
+        score = stats["xp_daily"]
+    elif timeframe_val == "weekly":
+        score = stats["xp_weekly"]
+    elif timeframe_val == "monthly":
+        score = stats["xp_monthly"]
+    else:
+        score = stats["xp"]
+        
+    score_padded = padColumn(formatXP(score), 12, 'right') + " "
+    rank_padded = format_rank_col(rank, is_caller)
+    
+    row_content = f"│{rank_padded}│{name_padded}│{lvl_padded}│{score_padded}│"
+    
+    if is_caller:
+        return f"\u001b[1;35m{row_content}\u001b[0m"
+    elif rank == 1:
+        return f"\u001b[1;33m{row_content}\u001b[0m"
+    elif rank == 2:
+        return f"\u001b[1;37m{row_content}\u001b[0m"
+    elif rank == 3:
+        return f"\u001b[0;33m{row_content}\u001b[0m"
+    else:
+        return f"\u001b[0;37m{row_content}\u001b[0m"
+
+def generateTable(users: list, start_rank: int, timeframe_val: str, interaction: discord.Interaction, caller_id: int) -> str:
     if not users:
         return "No players have entered the leaderboard yet."
         
-    # Table headers: 5 + 1 + 19 + 1 + 7 + 1 + 10 = 44 columns
-    header = f"{'Rank':<5} {'Player':<19} {'Level':<7} {'Score':<10}"
-    separator = "─" * 44
+    RK_WIDTH = 4
+    PLAYER_WIDTH = 22
+    LEVEL_WIDTH = 8
+    SCORE_WIDTH = 13
     
-    # Colored header and separator
+    top_border = f"┌{'─' * RK_WIDTH}┬{'─' * PLAYER_WIDTH}┬{'─' * LEVEL_WIDTH}┬{'─' * SCORE_WIDTH}┐"
+    header_border = f"├{'─' * RK_WIDTH}┼{'─' * PLAYER_WIDTH}┼{'─' * LEVEL_WIDTH}┼{'─' * SCORE_WIDTH}┤"
+    bottom_border = f"└{'─' * RK_WIDTH}┴{'─' * PLAYER_WIDTH}┴{'─' * LEVEL_WIDTH}┴{'─' * SCORE_WIDTH}┘"
+    
+    header = "│ RK │ PLAYER               │ LEVEL  │ SCORE       │"
+    
+    colored_top = f"\u001b[1;30m{top_border}\u001b[0m"
     colored_header = f"\u001b[1;37m{header}\u001b[0m"
-    colored_sep = f"\u001b[1;30m{separator}\u001b[0m"
+    colored_sep = f"\u001b[1;30m{header_border}\u001b[0m"
+    colored_bottom = f"\u001b[1;30m{bottom_border}\u001b[0m"
     
     rows = []
     for idx, stats in enumerate(users):
         rank = start_rank + idx
-        member = interaction.guild.get_member(stats["user_id"])
-        name = member.display_name if member else f"User {stats['user_id']}"
-        
         is_caller = (stats["user_id"] == caller_id)
+        row_text = formatLeaderboardRow(stats, rank, is_caller, timeframe_val, interaction)
+        rows.append(row_text)
         
-        # Format columns with visual padding
-        rank_padded = format_rank_col(rank, is_caller)
-        name_padded = pad_visual(name, 19)
-        lvl_padded = pad_visual(f"Lvl {stats['level']}", 7)
-        
-        if timeframe_val == "daily":
-            score = stats["xp_daily"]
-        elif timeframe_val == "weekly":
-            score = stats["xp_weekly"]
-        elif timeframe_val == "monthly":
-            score = stats["xp_monthly"]
-        else:
-            score = stats["xp"]
-            
-        score_padded = pad_visual(f"{score:,} XP", 10)
-        
-        row_text = f"{rank_padded} {name_padded} {lvl_padded} {score_padded}"
-        
-        # Color coding:
-        # Caller: Bold Magenta
-        # Rank 1: Bold Yellow
-        # Rank 2: Bold Cyan
-        # Rank 3: Bold Green
-        # Others: Standard White/Gray
-        if is_caller:
-            colored_row = f"\u001b[1;35m{row_text}\u001b[0m"
-        elif rank == 1:
-            colored_row = f"\u001b[1;33m{row_text}\u001b[0m"
-        elif rank == 2:
-            colored_row = f"\u001b[1;36m{row_text}\u001b[0m"
-        elif rank == 3:
-            colored_row = f"\u001b[1;32m{row_text}\u001b[0m"
-        else:
-            colored_row = f"\u001b[0;37m{row_text}\u001b[0m"
-            
-        rows.append(colored_row)
-        
-    return "```ansi\n" + colored_header + "\n" + colored_sep + "\n" + "\n".join(rows) + "\n```"
+    return "```ansi\n" + colored_top + "\n" + colored_header + "\n" + colored_sep + "\n" + "\n".join(rows) + "\n" + colored_bottom + "\n```"
+
 
 class LeaderboardView(discord.ui.View):
     def __init__(
@@ -199,7 +247,7 @@ class LeaderboardView(discord.ui.View):
                 await interaction.response.send_message("❌ Unable to load leaderboard.", ephemeral=True)
                 return
             
-        table_str = format_leaderboard_table(top_users, offset + 1, self.timeframe_val, interaction, self.author_id)
+        table_str = generateTable(top_users, offset + 1, self.timeframe_val, interaction, self.author_id)
         
         # User Standing Block formatting
         if user_stats:
@@ -348,7 +396,7 @@ class Leaderboards(commands.Cog):
                 return
 
         title_timeframe = timeframe.name if timeframe else "All Time"
-        table_str = format_leaderboard_table(top_users, 1, timeframe_val, interaction, interaction.user.id)
+        table_str = generateTable(top_users, 1, timeframe_val, interaction, interaction.user.id)
 
         # User Standing Block formatting
         if user_stats:
