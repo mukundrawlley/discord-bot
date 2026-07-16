@@ -240,17 +240,21 @@ class LeaderboardView(discord.ui.View):
         
         # User Standing Block formatting
         if user_stats:
-            if self.timeframe_val == "daily":
-                caller_score = user_stats["xp_daily"]
-            elif self.timeframe_val == "weekly":
-                caller_score = user_stats["xp_weekly"]
-            elif self.timeframe_val == "monthly":
-                caller_score = user_stats["xp_monthly"]
+            if self.timeframe_val == "level":
+                rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
+                standing_text = f"Rank: **{rank_str}** • Level **{user_stats['level']}**"
             else:
-                caller_score = user_stats["xp"]
-                
-            rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
-            standing_text = f"Rank: **{rank_str}** • XP: **{caller_score:,}** (Level {user_stats['level']})"
+                if self.timeframe_val == "daily":
+                    caller_score = user_stats["xp_daily"]
+                elif self.timeframe_val == "weekly":
+                    caller_score = user_stats["xp_weekly"]
+                elif self.timeframe_val == "monthly":
+                    caller_score = user_stats["xp_monthly"]
+                else:
+                    caller_score = user_stats["xp"]
+                    
+                rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
+                standing_text = f"Rank: **{rank_str}** • XP: **{caller_score:,}** (Level {user_stats['level']})"
         else:
             standing_text = "You're currently unranked."
             
@@ -261,7 +265,9 @@ class LeaderboardView(discord.ui.View):
         )
         
         # Dynamic Embed color
-        if self.timeframe_val == "daily":
+        if self.timeframe_val == "level":
+            embed_color = discord.Color.teal()
+        elif self.timeframe_val == "daily":
             embed_color = discord.Color.red()
         elif self.timeframe_val == "weekly":
             embed_color = discord.Color.blue()
@@ -322,6 +328,7 @@ class Leaderboards(commands.Cog):
     @app_commands.choices(
         type=[
             app_commands.Choice(name="XP", value="xp"),
+            app_commands.Choice(name="Level", value="level"),
             app_commands.Choice(name="Bias Coins (Future)", value="coins"),
             app_commands.Choice(name="Gacha Spins (Future)", value="spins"),
             app_commands.Choice(name="Characters (Future)", value="characters")
@@ -341,15 +348,18 @@ class Leaderboards(commands.Cog):
     ) -> None:
         """Displays user standings in the guild. Fetches statistical ranking sheets."""
         board_type = type.value
-        timeframe_val = timeframe.value if timeframe else "all_time"
-
-        # Check for future feature placeholders
-        if board_type != "xp":
+        
+        if board_type not in ("xp", "level"):
             await interaction.response.send_message(
                 content=f"🚫 The **{type.name}** leaderboard is **Not Available** in Phase 1.",
                 ephemeral=True
             )
             return
+
+        if board_type == "level":
+            timeframe_val = "level"
+        else:
+            timeframe_val = timeframe.value if timeframe else "all_time"
 
         await interaction.response.defer()
         guild_id = interaction.guild_id
@@ -384,22 +394,30 @@ class Leaderboards(commands.Cog):
                 await interaction.followup.send("❌ Unable to load leaderboard.", ephemeral=True)
                 return
 
-        title_timeframe = timeframe.name if timeframe else "All Time"
+        if timeframe_val == "level":
+            title_timeframe = "Lifetime Level"
+        else:
+            title_timeframe = timeframe.name if timeframe else "All Time"
+            
         table_str = generateTable(top_users, 1, timeframe_val, interaction, interaction.user.id)
 
         # User Standing Block formatting
         if user_stats:
-            if timeframe_val == "daily":
-                caller_score = user_stats["xp_daily"]
-            elif timeframe_val == "weekly":
-                caller_score = user_stats["xp_weekly"]
-            elif timeframe_val == "monthly":
-                caller_score = user_stats["xp_monthly"]
+            if timeframe_val == "level":
+                rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
+                standing_text = f"Rank: **{rank_str}** • Level **{user_stats['level']}**"
             else:
-                caller_score = user_stats["xp"]
-                
-            rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
-            standing_text = f"Rank: **{rank_str}** • XP: **{caller_score:,}** (Level {user_stats['level']})"
+                if timeframe_val == "daily":
+                    caller_score = user_stats["xp_daily"]
+                elif timeframe_val == "weekly":
+                    caller_score = user_stats["xp_weekly"]
+                elif timeframe_val == "monthly":
+                    caller_score = user_stats["xp_monthly"]
+                else:
+                    caller_score = user_stats["xp"]
+                    
+                rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
+                standing_text = f"Rank: **{rank_str}** • XP: **{caller_score:,}** (Level {user_stats['level']})"
         else:
             standing_text = "You're currently unranked."
             
@@ -410,7 +428,9 @@ class Leaderboards(commands.Cog):
         )
 
         # Dynamic Embed color
-        if timeframe_val == "daily":
+        if timeframe_val == "level":
+            embed_color = discord.Color.teal()
+        elif timeframe_val == "daily":
             embed_color = discord.Color.red()
         elif timeframe_val == "weekly":
             embed_color = discord.Color.blue()

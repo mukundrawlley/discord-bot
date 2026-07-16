@@ -39,7 +39,9 @@ class LeaderboardService:
             if current_time - ts < 30:
                 return cached_data
                 
-        if filter_type == "daily":
+        if filter_type == "level":
+            order_col = UserGuildStats.level
+        elif filter_type == "daily":
             order_col = UserGuildStats.xp_daily
         elif filter_type == "weekly":
             order_col = UserGuildStats.xp_weekly
@@ -90,7 +92,9 @@ class LeaderboardService:
             if current_time - ts < 30:
                 return cached_count
                 
-        if filter_type == "daily":
+        if filter_type == "level":
+            order_col = UserGuildStats.level
+        elif filter_type == "daily":
             order_col = UserGuildStats.xp_daily
         elif filter_type == "weekly":
             order_col = UserGuildStats.xp_weekly
@@ -129,7 +133,9 @@ class LeaderboardService:
             if current_time - ts < 30:
                 return rank, cached_stats
                 
-        if filter_type == "daily":
+        if filter_type == "level":
+            order_col = UserGuildStats.level
+        elif filter_type == "daily":
             order_col = UserGuildStats.xp_daily
         elif filter_type == "weekly":
             order_col = UserGuildStats.xp_weekly
