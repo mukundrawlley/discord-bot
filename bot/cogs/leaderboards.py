@@ -2,66 +2,24 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
-import unicodedata
 
 from bot.database.connection import get_db_session
 from bot.services.leaderboard_service import LeaderboardService
 
 logger = logging.getLogger("Journey.LeaderboardCog")
 
-def get_char_width(char: str) -> int:
-    o = ord(char)
-    cat = unicodedata.category(char)
-    # Zero-width combining marks, controls, and formatting characters
-    if cat.startswith('M') or cat.startswith('C'):
-        return 0
-    if 32 <= o <= 126:
-        return 1
-    status = unicodedata.east_asian_width(char)
-    if status in ('W', 'F', 'A'):
-        return 2
-    if cat.startswith('S') or o > 0xffff:
-        return 2
-    return 1
-
-def get_visual_width(s: str) -> int:
-    return sum(get_char_width(c) for c in s)
-
-def pad_visual(s: str, target_width: int) -> str:
-    total_w = get_visual_width(s)
-    if total_w <= target_width:
-        return s + ' ' * (target_width - total_w)
-    
-    limit = target_width - 3
-    current_width = 0
-    truncated_chars = []
-    for char in s:
-        char_w = get_char_width(char)
-        if current_width + char_w > limit:
-            break
-        truncated_chars.append(char)
-        current_width += char_w
-        
-    truncated_str = "".join(truncated_chars) + "..."
-    final_w = get_visual_width(truncated_str)
-    return truncated_str + ' ' * (target_width - final_w)
-
-def format_leaderboard_table(users: list, start_rank: int, timeframe_val: str, interaction: discord.Interaction) -> str:
+def format_leaderboard_list(users: list, start_rank: int, timeframe_val: str, interaction: discord.Interaction) -> str:
     if not users:
         return "*No members have earned XP in this timeframe yet.*"
         
-    # Table headers
-    header = f"{'Rank':<5} | {'Member Name':<19} | {'Level':<5} | {'XP':<10}\n"
-    separator = f"{'-'*5}-+-{'-'*19}-+-{'-'*5}-+-{'-'*10}\n"
-    
-    rows = []
+    lines = []
     for idx, stats in enumerate(users):
         rank = start_rank + idx
         member = interaction.guild.get_member(stats.user_id)
         name = member.display_name if member else f"User {stats.user_id}"
         
-        # Use visual padding for aligned names
-        padded_name = pad_visual(name, 19)
+        # Escape markdown to prevent username styling from breaking layout
+        escaped_name = discord.utils.escape_markdown(name)
             
         if timeframe_val == "daily":
             score = stats.xp_daily
@@ -72,10 +30,19 @@ def format_leaderboard_table(users: list, start_rank: int, timeframe_val: str, i
         else:
             score = stats.xp
             
-        rows.append(f"#{rank:<4} | {padded_name} | Lvl {stats.level:<2} | {score:,} XP")
+        # Medal representations for top 3
+        if rank == 1:
+            rank_str = "🥇"
+        elif rank == 2:
+            rank_str = "🥈"
+        elif rank == 3:
+            rank_str = "🥉"
+        else:
+            rank_str = f"**#{rank}**"
+            
+        lines.append(f"{rank_str} • **{escaped_name}** • Level {stats.level} • `{score:,} XP`")
         
-    return "```text\n" + header + separator + "\n".join(rows) + "\n```"
-
+    return "\n".join(lines)
 
 class LeaderboardView(discord.ui.View):
     def __init__(
@@ -139,14 +106,9 @@ class LeaderboardView(discord.ui.View):
                 filter_type=self.timeframe_val
             )
             
-        table_str = format_leaderboard_table(top_users, offset + 1, self.timeframe_val, interaction)
+        list_str = format_leaderboard_list(top_users, offset + 1, self.timeframe_val, interaction)
         
-        embed = discord.Embed(
-            title=f"📈 Journey Leaderboard - {self.title_timeframe} XP",
-            description=table_str,
-            color=discord.Color.gold()
-        )
-        
+        # Build description with personal standing block at the top
         caller_name = interaction.user.display_name
         if user_stats:
             if self.timeframe_val == "daily":
@@ -159,13 +121,29 @@ class LeaderboardView(discord.ui.View):
                 caller_score = user_stats.xp
                 
             rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
-            embed.set_footer(
-                text=f"Standing: {rank_str} | {caller_name} | {caller_score:,} XP | Page {self.current_page}/{self.total_pages}"
+            description = (
+                f"👤 **Your Standing:**\n"
+                f"You are ranked **{rank_str}** on this server with **{caller_score:,} XP** (Level {user_stats.level})\n\n"
+                f"---\n"
+                f"{list_str}"
             )
         else:
-            embed.set_footer(
-                text=f"Standing: Unranked | {caller_name} | 0 XP | Page {self.current_page}/{self.total_pages}"
+            description = (
+                f"👤 **Your Standing:**\n"
+                f"You are ranked **Unranked** on this server with **0 XP** (Level 0)\n\n"
+                f"---\n"
+                f"{list_str}"
             )
+
+        embed = discord.Embed(
+            title=f"📈 Journey Leaderboard - {self.title_timeframe} XP",
+            description=description,
+            color=discord.Color.gold()
+        )
+        
+        embed.set_footer(
+            text=f"Page {self.current_page}/{self.total_pages} | Total Ranked: {self.total_count}"
+        )
             
         self.update_button_states()
         await interaction.response.edit_message(embed=embed, view=self)
@@ -252,18 +230,9 @@ class Leaderboards(commands.Cog):
             )
 
         title_timeframe = timeframe.name if timeframe else "All Time"
-        table_str = format_leaderboard_table(top_users, 1, timeframe_val, interaction)
+        list_str = format_leaderboard_list(top_users, 1, timeframe_val, interaction)
 
-        # Build Embed
-        embed = discord.Embed(
-            title=f"📈 Journey Leaderboard - {title_timeframe} XP",
-            description=table_str,
-            color=discord.Color.gold()
-        )
-
-        total_pages = max(1, (total_count + 9) // 10)
-
-        # Display Caller's rank
+        # Build description with personal standing block at the top
         caller_name = interaction.user.display_name
         if user_stats:
             if timeframe_val == "daily":
@@ -276,13 +245,32 @@ class Leaderboards(commands.Cog):
                 caller_score = user_stats.xp
             
             rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
-            embed.set_footer(
-                text=f"Standing: {rank_str} | {caller_name} | {caller_score:,} XP | Page 1/{total_pages}"
+            description = (
+                f"👤 **Your Standing:**\n"
+                f"You are ranked **{rank_str}** on this server with **{caller_score:,} XP** (Level {user_stats.level})\n\n"
+                f"---\n"
+                f"{list_str}"
             )
         else:
-            embed.set_footer(
-                text=f"Standing: Unranked | {caller_name} | 0 XP | Page 1/{total_pages}"
+            description = (
+                f"👤 **Your Standing:**\n"
+                f"You are ranked **Unranked** on this server with **0 XP** (Level 0)\n\n"
+                f"---\n"
+                f"{list_str}"
             )
+
+        total_pages = max(1, (total_count + 9) // 10)
+
+        # Build Embed
+        embed = discord.Embed(
+            title=f"📈 Journey Leaderboard - {title_timeframe} XP",
+            description=description,
+            color=discord.Color.gold()
+        )
+        
+        embed.set_footer(
+            text=f"Page 1/{total_pages} | Total Ranked: {total_count}"
+        )
 
         view = LeaderboardView(
             author_id=interaction.user.id,
