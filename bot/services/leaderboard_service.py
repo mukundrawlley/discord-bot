@@ -10,16 +10,35 @@ from bot.models.rank import LeaderboardSnapshot
 logger = logging.getLogger("Journey.LeaderboardService")
 
 class LeaderboardService:
+    # In-memory cache dictionaries
+    # Key: (guild_id, filter_type, limit, offset) -> (timestamp, list[dict])
+    _leaderboard_cache = {}
+    
+    # Key: (guild_id, filter_type) -> (timestamp, count)
+    _count_cache = {}
+    
+    # Key: (guild_id, user_id, filter_type) -> (timestamp, rank, dict)
+    _user_rank_cache = {}
+
     @staticmethod
     async def get_leaderboard(
         session: AsyncSession,
         guild_id: int,
         filter_type: str = "all_time",
         limit: int = 10,
-        offset: int = 0
-    ) -> list[UserGuildStats]:
-        """Fetches top users sorted by the requested time filter, supporting offset for pagination."""
+        offset: int = 0,
+        force_refresh: bool = False
+    ) -> list[dict]:
+        """Fetches top users sorted by the requested time filter, supporting offset and 30s cache."""
+        current_time = datetime.now(timezone.utc).timestamp()
         filter_type = filter_type.lower()
+        cache_key = (guild_id, filter_type, limit, offset)
+        
+        if not force_refresh and cache_key in LeaderboardService._leaderboard_cache:
+            ts, cached_data = LeaderboardService._leaderboard_cache[cache_key]
+            if current_time - ts < 30:
+                return cached_data
+                
         if filter_type == "daily":
             order_col = UserGuildStats.xp_daily
         elif filter_type == "weekly":
@@ -32,21 +51,45 @@ class LeaderboardService:
         result = await session.execute(
             select(UserGuildStats)
             .filter_by(guild_id=guild_id)
-            .filter(order_col > 0) # Only include members with XP in the current filter
+            .filter(order_col > 0)
             .order_by(order_col.desc())
             .offset(offset)
             .limit(limit)
         )
-        return list(result.scalars())
+        users = list(result.scalars())
+        
+        # Serialize to dict to prevent detached session errors
+        data = []
+        for u in users:
+            data.append({
+                "user_id": u.user_id,
+                "xp": u.xp,
+                "level": u.level,
+                "xp_daily": u.xp_daily,
+                "xp_weekly": u.xp_weekly,
+                "xp_monthly": u.xp_monthly
+            })
+            
+        LeaderboardService._leaderboard_cache[cache_key] = (current_time, data)
+        return data
 
     @staticmethod
     async def get_ranked_users_count(
         session: AsyncSession,
         guild_id: int,
-        filter_type: str = "all_time"
+        filter_type: str = "all_time",
+        force_refresh: bool = False
     ) -> int:
-        """Counts how many users have a score greater than 0 for the selected timeframe."""
+        """Counts how many users have a score greater than 0 for the selected timeframe (30s cache)."""
+        current_time = datetime.now(timezone.utc).timestamp()
         filter_type = filter_type.lower()
+        cache_key = (guild_id, filter_type)
+        
+        if not force_refresh and cache_key in LeaderboardService._count_cache:
+            ts, cached_count = LeaderboardService._count_cache[cache_key]
+            if current_time - ts < 30:
+                return cached_count
+                
         if filter_type == "daily":
             order_col = UserGuildStats.xp_daily
         elif filter_type == "weekly":
@@ -63,20 +106,29 @@ class LeaderboardService:
             .filter_by(guild_id=guild_id)
             .filter(order_col > 0)
         )
-        return result.scalar_one()
+        count = result.scalar_one()
+        
+        LeaderboardService._count_cache[cache_key] = (current_time, count)
+        return count
 
     @staticmethod
     async def get_user_rank(
         session: AsyncSession,
         guild_id: int,
         user_id: int,
-        filter_type: str = "all_time"
-    ) -> tuple[int, UserGuildStats | None]:
-        """Gets a specific user's leaderboard position and stats. Returns (rank_position, stats).
-        
-        Rank positions are 1-indexed. Returns (0, None) if the user has no stats.
-        """
+        filter_type: str = "all_time",
+        force_refresh: bool = False
+    ) -> tuple[int, dict | None]:
+        """Gets a specific user's leaderboard position and stats (30s cache)."""
+        current_time = datetime.now(timezone.utc).timestamp()
         filter_type = filter_type.lower()
+        cache_key = (guild_id, user_id, filter_type)
+        
+        if not force_refresh and cache_key in LeaderboardService._user_rank_cache:
+            ts, rank, cached_stats = LeaderboardService._user_rank_cache[cache_key]
+            if current_time - ts < 30:
+                return rank, cached_stats
+                
         if filter_type == "daily":
             order_col = UserGuildStats.xp_daily
         elif filter_type == "weekly":
@@ -86,19 +138,26 @@ class LeaderboardService:
         else:
             order_col = UserGuildStats.xp
             
-        # Get user's own stats first
         stats_result = await session.execute(
             select(UserGuildStats).filter_by(guild_id=guild_id, user_id=user_id)
         )
         user_stats = stats_result.scalar_one_or_none()
         if not user_stats:
+            LeaderboardService._user_rank_cache[cache_key] = (current_time, 0, None)
             return 0, None
             
-        # Get their score
         user_score = getattr(user_stats, order_col.name)
         if user_score == 0:
-            # User has no score, they are at the bottom (unranked)
-            return 0, user_stats
+            stats_dict = {
+                "user_id": user_stats.user_id,
+                "xp": user_stats.xp,
+                "level": user_stats.level,
+                "xp_daily": user_stats.xp_daily,
+                "xp_weekly": user_stats.xp_weekly,
+                "xp_monthly": user_stats.xp_monthly
+            }
+            LeaderboardService._user_rank_cache[cache_key] = (current_time, 0, stats_dict)
+            return 0, stats_dict
             
         # Count how many users have a higher score than this user
         count_result = await session.execute(
@@ -107,8 +166,18 @@ class LeaderboardService:
             .filter(order_col > user_score)
         )
         higher_count = len(list(count_result.scalars()))
+        rank = higher_count + 1
         
-        return higher_count + 1, user_stats
+        stats_dict = {
+            "user_id": user_stats.user_id,
+            "xp": user_stats.xp,
+            "level": user_stats.level,
+            "xp_daily": user_stats.xp_daily,
+            "xp_weekly": user_stats.xp_weekly,
+            "xp_monthly": user_stats.xp_monthly
+        }
+        LeaderboardService._user_rank_cache[cache_key] = (current_time, rank, stats_dict)
+        return rank, stats_dict
 
     @staticmethod
     async def take_snapshot_and_reset(
@@ -119,13 +188,16 @@ class LeaderboardService:
         """Saves a snapshot of the current leaderboard period, then resets the respective running XP column."""
         snapshot_type = snapshot_type.lower()
         
-        # 1. Fetch top 100 members in the category
-        top_stats = await LeaderboardService.get_leaderboard(
-            session=session,
-            guild_id=guild_id,
-            filter_type=snapshot_type,
-            limit=100
+        # Query database directly for snapshot raw model objects
+        order_col = getattr(UserGuildStats, f"xp_{snapshot_type}" if snapshot_type != "all_time" else "xp")
+        result = await session.execute(
+            select(UserGuildStats)
+            .filter_by(guild_id=guild_id)
+            .filter(order_col > 0)
+            .order_by(order_col.desc())
+            .limit(100)
         )
+        top_stats = list(result.scalars())
         
         if top_stats:
             # Build snapshot payload
@@ -147,7 +219,7 @@ class LeaderboardService:
             session.add(snapshot)
             logger.info(f"Captured {snapshot_type} snapshot for guild {guild_id}.")
             
-        # 2. Reset the respective columns in database
+        # Reset the respective columns in database
         if snapshot_type == "daily":
             await session.execute(
                 update(UserGuildStats)
