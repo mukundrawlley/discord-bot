@@ -15,9 +15,10 @@ class LeaderboardService:
         session: AsyncSession,
         guild_id: int,
         filter_type: str = "all_time",
-        limit: int = 10
+        limit: int = 10,
+        offset: int = 0
     ) -> list[UserGuildStats]:
-        """Fetches top users sorted by the requested time filter."""
+        """Fetches top users sorted by the requested time filter, supporting offset for pagination."""
         filter_type = filter_type.lower()
         if filter_type == "daily":
             order_col = UserGuildStats.xp_daily
@@ -33,9 +34,36 @@ class LeaderboardService:
             .filter_by(guild_id=guild_id)
             .filter(order_col > 0) # Only include members with XP in the current filter
             .order_by(order_col.desc())
+            .offset(offset)
             .limit(limit)
         )
         return list(result.scalars())
+
+    @staticmethod
+    async def get_ranked_users_count(
+        session: AsyncSession,
+        guild_id: int,
+        filter_type: str = "all_time"
+    ) -> int:
+        """Counts how many users have a score greater than 0 for the selected timeframe."""
+        filter_type = filter_type.lower()
+        if filter_type == "daily":
+            order_col = UserGuildStats.xp_daily
+        elif filter_type == "weekly":
+            order_col = UserGuildStats.xp_weekly
+        elif filter_type == "monthly":
+            order_col = UserGuildStats.xp_monthly
+        else:
+            order_col = UserGuildStats.xp
+            
+        from sqlalchemy import func
+        result = await session.execute(
+            select(func.count())
+            .select_from(UserGuildStats)
+            .filter_by(guild_id=guild_id)
+            .filter(order_col > 0)
+        )
+        return result.scalar_one()
 
     @staticmethod
     async def get_user_rank(
