@@ -50,20 +50,20 @@ def pad_visual(s: str, target_width: int) -> str:
 def format_rank_col(rank: int, is_caller: bool) -> str:
     if is_caller:
         if rank < 10:
-            return f"★{rank} "
+            return f"★ {rank}  "
         else:
-            return f"★{rank}"
+            return f"★ {rank} "
     if rank == 1:
-        return "🥇1 "
+        return " 🥇1  "
     elif rank == 2:
-        return "🥈2 "
+        return " 🥈2  "
     elif rank == 3:
-        return "🥉3 "
+        return " 🥉3  "
     else:
         if rank < 10:
-            return f" {rank}  "
+            return f"  {rank}   "
         else:
-            return f" {rank} "
+            return f"  {rank}  "
 
 def formatXP(score: int) -> str:
     return f"{score:,} XP"
@@ -101,15 +101,15 @@ def formatLeaderboardRow(stats: dict, rank: int, is_caller: bool, timeframe_val:
     member = interaction.guild.get_member(stats["user_id"])
     name = member.display_name if member else f"User {stats['user_id']}"
     
-    # Target column widths: PLAYER_WIDTH = 22, LEVEL_WIDTH = 8, SCORE_WIDTH = 13
+    # Target column widths: PLAYER_WIDTH = 22, LEVEL_WIDTH = 9, SCORE_WIDTH = 12
     name_width_val = get_visual_width(name)
-    if name_width_val > 21:
-        truncated = truncateUsername(name, 21)
-        name_padded = " " + padColumn(truncated, 21, 'left')
+    if name_width_val > 20:
+        truncated = truncateUsername(name, 20)
+        name_padded = " " + padColumn(truncated, 20, 'left') + " "
     else:
-        name_padded = " " + padColumn(name, 21, 'left')
+        name_padded = " " + padColumn(name, 20, 'left') + " "
         
-    lvl_padded = centerText(f"Lv.{stats['level']}", 8)
+    lvl_padded = centerText(f"Lv {stats['level']}", 9)
     
     if timeframe_val == "daily":
         score = stats["xp_daily"]
@@ -120,10 +120,10 @@ def formatLeaderboardRow(stats: dict, rank: int, is_caller: bool, timeframe_val:
     else:
         score = stats["xp"]
         
-    score_padded = padColumn(formatXP(score), 12, 'right') + " "
+    score_padded = padColumn(formatXP(score), 11, 'right') + " "
     rank_padded = format_rank_col(rank, is_caller)
     
-    row_content = f"│{rank_padded}│{name_padded}│{lvl_padded}│{score_padded}│"
+    row_content = f"|{rank_padded}|{name_padded}|{lvl_padded}|{score_padded}|"
     
     if is_caller:
         return f"\u001b[1;35m{row_content}\u001b[0m"
@@ -140,21 +140,16 @@ def generateTable(users: list, start_rank: int, timeframe_val: str, interaction:
     if not users:
         return "No players have entered the leaderboard yet."
         
-    RK_WIDTH = 4
+    RK_WIDTH = 6
     PLAYER_WIDTH = 22
-    LEVEL_WIDTH = 8
-    SCORE_WIDTH = 13
+    LEVEL_WIDTH = 9
+    SCORE_WIDTH = 12
     
-    top_border = f"┌{'─' * RK_WIDTH}┬{'─' * PLAYER_WIDTH}┬{'─' * LEVEL_WIDTH}┬{'─' * SCORE_WIDTH}┐"
-    header_border = f"├{'─' * RK_WIDTH}┼{'─' * PLAYER_WIDTH}┼{'─' * LEVEL_WIDTH}┼{'─' * SCORE_WIDTH}┤"
-    bottom_border = f"└{'─' * RK_WIDTH}┴{'─' * PLAYER_WIDTH}┴{'─' * LEVEL_WIDTH}┴{'─' * SCORE_WIDTH}┘"
+    border = f"+{'-' * RK_WIDTH}+{'-' * PLAYER_WIDTH}+{'-' * LEVEL_WIDTH}+{'-' * SCORE_WIDTH}+"
+    header = f"|{' Rank ':^6}|{' Player':<22}|{centerText('Level', 9)}|{padColumn('Score', 11, 'right')} |"
     
-    header = "│ RK │ PLAYER               │ LEVEL  │ SCORE       │"
-    
-    colored_top = f"\u001b[1;30m{top_border}\u001b[0m"
+    colored_border = f"\u001b[1;30m{border}\u001b[0m"
     colored_header = f"\u001b[1;37m{header}\u001b[0m"
-    colored_sep = f"\u001b[1;30m{header_border}\u001b[0m"
-    colored_bottom = f"\u001b[1;30m{bottom_border}\u001b[0m"
     
     rows = []
     for idx, stats in enumerate(users):
@@ -163,7 +158,7 @@ def generateTable(users: list, start_rank: int, timeframe_val: str, interaction:
         row_text = formatLeaderboardRow(stats, rank, is_caller, timeframe_val, interaction)
         rows.append(row_text)
         
-    return "```ansi\n" + colored_top + "\n" + colored_header + "\n" + colored_sep + "\n" + "\n".join(rows) + "\n" + colored_bottom + "\n```"
+    return "```ansi\n" + colored_border + "\n" + colored_header + "\n" + colored_border + "\n" + "\n".join(rows) + "\n" + colored_border + "\n```"
 
 
 class LeaderboardView(discord.ui.View):
