@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import BigInteger, ForeignKey, String, Text, Integer, DateTime, Boolean
+from sqlalchemy import BigInteger, ForeignKey, String, Text, Integer, DateTime, Boolean, ForeignKeyConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from bot.database.base import Base
 
@@ -40,6 +40,14 @@ class ClanMember(Base):
     join_date: Mapped[datetime] = mapped_column(
         DateTime,
         default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+    )
+    
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["guild_id", "user_id"],
+            ["user_guild_stats.guild_id", "user_guild_stats.user_id"],
+            ondelete="CASCADE"
+        ),
     )
     
     clan = relationship("Clan", back_populates="members")
