@@ -3,7 +3,16 @@ from bot.models.guild import Guild, GuildSettings
 from bot.models.user import User, UserGuildStats
 from bot.models.path import MasterPath
 from bot.models.rank import PathRank, LeaderboardSnapshot
-from bot.models.clan import Clan
+from bot.models.clan import (
+    Clan,
+    ClanMember,
+    ClanRole,
+    ClanRolePermission,
+    ClanAuditLog,
+    ClanApplication,
+    ClanInvite,
+    ClanSettings
+)
 
 __all__ = [
     "Base",
@@ -15,4 +24,11 @@ __all__ = [
     "PathRank",
     "LeaderboardSnapshot",
     "Clan",
+    "ClanMember",
+    "ClanRole",
+    "ClanRolePermission",
+    "ClanAuditLog",
+    "ClanApplication",
+    "ClanInvite",
+    "ClanSettings"
 ]

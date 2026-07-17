@@ -124,15 +124,6 @@ class JourneyBot(commands.Bot):
                     if col_name not in guild_settings_cols:
                         logger.info(f"Adding missing column {col_name} to guild_settings...")
                         connection.execute(text(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}"))
-                
-                # Check user_guild_stats table
-                user_stats_cols = [col['name'] for col in inspector.get_columns("user_guild_stats")]
-                if "clan_id" not in user_stats_cols:
-                    logger.info("Adding missing column clan_id to user_guild_stats...")
-                    connection.execute(text("ALTER TABLE user_guild_stats ADD COLUMN clan_id INTEGER REFERENCES clans(id) ON DELETE SET NULL"))
-                if "is_vice_captain" not in user_stats_cols:
-                    logger.info("Adding missing column is_vice_captain to user_guild_stats...")
-                    connection.execute(text("ALTER TABLE user_guild_stats ADD COLUMN is_vice_captain BOOLEAN DEFAULT FALSE"))
                     
             await conn.run_sync(check_and_add_columns)
         logger.info("Database schema integrity check completed.")
@@ -260,6 +251,82 @@ async def sync_commands(ctx: commands.Context):
     except Exception as e:
         await ctx.send(f"❌ Failed to sync commands: `{e}`")
         logger.error("Command sync failed", exc_info=e)
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member) -> None:
+    # Ignore bot self updates
+    if after.id == bot.user.id:
+        return
+        
+    # Check if the role differences are relevant to clans
+    role_diff = set(before.roles) ^ set(after.roles)
+    if not role_diff:
+        return
+        
+    from sqlalchemy.orm import selectinload
+    async with get_db_session() as session:
+        from bot.models.clan import ClanMember, ClanRole, Clan
+        from sqlalchemy.future import select
+        
+        result = await session.execute(
+            select(ClanMember)
+            .options(selectinload(ClanMember.role))
+            .filter_by(guild_id=after.guild.id, user_id=after.id)
+        )
+        membership = result.scalar_one_or_none()
+        
+        if membership:
+            # Fetch all roles for this clan
+            roles_result = await session.execute(
+                select(ClanRole).filter_by(clan_id=membership.clan_id)
+            )
+            clan_roles = list(roles_result.scalars())
+            correct_role_id = membership.role.discord_role_id if (membership.role and membership.role.discord_role_id) else None
+            
+            for role in clan_roles:
+                if not role.discord_role_id:
+                    continue
+                discord_role = after.guild.get_role(role.discord_role_id)
+                if not discord_role:
+                    continue
+                    
+                should_have = (role.discord_role_id == correct_role_id)
+                has_role = (discord_role in after.roles)
+                
+                if should_have and not has_role:
+                    try:
+                        logger.info(f"Auto-sync: Restoring missing clan role {role.role_name} to {after.display_name}")
+                        await after.add_roles(discord_role, reason="Journey Auto-Sync: Restore clan role.")
+                    except discord.Forbidden:
+                        logger.warning(f"Auto-sync: Missing permission to add role {role.role_name} to {after.display_name}")
+                elif not should_have and has_role:
+                    try:
+                        logger.info(f"Auto-sync: Removing incorrect clan role {role.role_name} from {after.display_name}")
+                        await after.remove_roles(discord_role, reason="Journey Auto-Sync: Remove incorrect clan role.")
+                    except discord.Forbidden:
+                        logger.warning(f"Auto-sync: Missing permission to remove role {role.role_name} from {after.display_name}")
+        else:
+            # Strip any clan roles from users who are not in any clan
+            clans_result = await session.execute(
+                select(Clan).filter_by(guild_id=after.guild.id)
+            )
+            guild_clans = list(clans_result.scalars())
+            if guild_clans:
+                clan_ids = [c.id for c in guild_clans]
+                roles_result = await session.execute(
+                    select(ClanRole).filter(ClanRole.clan_id.in_(clan_ids))
+                )
+                all_clan_roles = list(roles_result.scalars())
+                for role in all_clan_roles:
+                    if not role.discord_role_id:
+                        continue
+                    discord_role = after.guild.get_role(role.discord_role_id)
+                    if discord_role and discord_role in after.roles:
+                        try:
+                            logger.info(f"Auto-sync: Removing clan role {role.role_name} from non-clan member {after.display_name}")
+                            await after.remove_roles(discord_role, reason="Journey Auto-Sync: Remove clan role from non-member.")
+                        except discord.Forbidden:
+                            pass
 
 @bot.event
 async def on_ready() -> None:
