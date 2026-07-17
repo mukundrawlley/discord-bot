@@ -56,6 +56,39 @@ class JourneyBot(commands.Bot):
         # Start background health server for Railway/Heroku port pings
         self.loop.create_task(start_health_server())
 
+        # Register global interaction check to restrict non-clan commands to servers where the bot is authorized
+        async def global_interaction_check(interaction: discord.Interaction) -> bool:
+            if interaction.command:
+                # Bypass check for any command in the 'clan' group
+                is_clan_cmd = False
+                if interaction.command.name == "clan":
+                    is_clan_cmd = True
+                elif interaction.command.root_parent and interaction.command.root_parent.name == "clan":
+                    is_clan_cmd = True
+                    
+                if is_clan_cmd:
+                    return True
+            
+            # For all other commands, verify server authorization (bot is in the guild)
+            if interaction.guild_id is not None:
+                if interaction.client.get_guild(interaction.guild_id) is None:
+                    await interaction.response.send_message(
+                        "❌ This command can only be used in servers where the bot is authorized/installed.",
+                        ephemeral=True
+                    )
+                    return False
+            else:
+                # Block execution in DMs/Group DMs
+                await interaction.response.send_message(
+                    "❌ This command requires a server context where the bot is authorized/installed.",
+                    ephemeral=True
+                )
+                return False
+                
+            return True
+            
+        self.tree.interaction_check = global_interaction_check
+
         # Initialize Playwright browser cache
         try:
             from bot.services.browser import BrowserManager
