@@ -124,6 +124,19 @@ class JourneyBot(commands.Bot):
                     if col_name not in guild_settings_cols:
                         logger.info(f"Adding missing column {col_name} to guild_settings...")
                         connection.execute(text(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}"))
+                
+                # Check clans table
+                if "clans" in inspector.get_table_names():
+                    clans_cols = [col['name'] for col in inspector.get_columns("clans")]
+                    if "approved" not in clans_cols:
+                        logger.info("Adding missing column approved to clans...")
+                        connection.execute(text("ALTER TABLE clans ADD COLUMN approved BOOLEAN DEFAULT FALSE"))
+                    if "approved_by" not in clans_cols:
+                        logger.info("Adding missing column approved_by to clans...")
+                        connection.execute(text("ALTER TABLE clans ADD COLUMN approved_by BIGINT"))
+                    if "approved_at" not in clans_cols:
+                        logger.info("Adding missing column approved_at to clans...")
+                        connection.execute(text("ALTER TABLE clans ADD COLUMN approved_at TIMESTAMP"))
                     
             await conn.run_sync(check_and_add_columns)
             
