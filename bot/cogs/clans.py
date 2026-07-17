@@ -1341,21 +1341,12 @@ class ClanGroup(app_commands.Group):
             )
             clan_roles = list(roles_result.scalars())
             
-        # Resolve leader name
-        leader_member = interaction.guild.get_member(clan.owner_id) if interaction.guild else None
-        if not leader_member:
-            try:
-                leader_member = await interaction.client.fetch_user(clan.owner_id)
-            except Exception:
-                pass
-        leader_name = leader_member.display_name if leader_member else f"ID: {clan.owner_id}"
-        
         embed = discord.Embed(
             title=f"🛡️ Clan: {clan.name} " + ("" if clan.approved else "(Pending Approval ⏳)"),
             description=clan.description or "*No description set.*",
             color=discord.Color.blue()
         )
-        embed.add_field(name="👑 Leader", value=f"<@{clan.owner_id}> ({leader_name})", inline=True)
+        embed.add_field(name="👑 Leader", value=f"<@{clan.owner_id}>", inline=True)
         embed.add_field(name="📅 Created", value=clan.created_at.strftime("%Y-%m-%d"), inline=True)
         
         # Sort members by hierarchy level descending
@@ -1363,14 +1354,6 @@ class ClanGroup(app_commands.Group):
         
         members_list = []
         for idx, m in enumerate(members):
-            member_obj = interaction.guild.get_member(m.user_id) if interaction.guild else None
-            if not member_obj:
-                try:
-                    member_obj = await interaction.client.fetch_user(m.user_id)
-                except Exception:
-                    pass
-            name = member_obj.display_name if member_obj else f"User {m.user_id}"
-            
             role_suffix = ""
             if m.role:
                 if m.role.hierarchy_level == 100:
@@ -1378,7 +1361,7 @@ class ClanGroup(app_commands.Group):
                 else:
                     role_suffix = f" ({m.role.role_name})"
                     
-            members_list.append(f"{idx+1}. <@{m.user_id}> ({name}){role_suffix}")
+            members_list.append(f"{idx+1}. <@{m.user_id}>{role_suffix}")
             
         members_str = "\n".join(members_list) if members_list else "*No members.*"
         embed.add_field(name=f"👥 Members ({len(members)})", value=members_str, inline=False)
