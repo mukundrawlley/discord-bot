@@ -29,17 +29,11 @@ class JoinView(discord.ui.View):
 
     @discord.ui.button(label="Join Clan", style=discord.ButtonStyle.success)
     async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from bot.services.database_service import DatabaseService
         async with get_db_session() as session:
-            # Check target member stats
-            stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=interaction.guild_id, user_id=self.target_member.id)
-            )
-            target_stats = stats_result.scalar_one_or_none()
-            if not target_stats:
-                # Initialize stats if not present
-                target_stats = UserGuildStats(guild_id=interaction.guild_id, user_id=self.target_member.id)
-                session.add(target_stats)
-                
+            # Ensure target member and their stats exist safely
+            target_stats = await DatabaseService.get_or_create_stats(session, interaction.guild_id, self.target_member.id)
+            
             if target_stats.clan_id is not None:
                 await interaction.response.send_message("❌ You are already in a clan! Leave your current clan first.", ephemeral=True)
                 return
@@ -106,13 +100,12 @@ class ClanGroup(app_commands.Group):
         guild_id = interaction.guild_id
         user_id = interaction.user.id
         
+        from bot.services.database_service import DatabaseService
         async with get_db_session() as session:
-            # Check if user already in clan
-            stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=user_id)
-            )
-            user_stats = stats_result.scalar_one_or_none()
-            if user_stats and user_stats.clan_id is not None:
+            # Safely create user stats
+            user_stats = await DatabaseService.get_or_create_stats(session, guild_id, user_id)
+            
+            if user_stats.clan_id is not None:
                 await interaction.response.send_message("❌ You are already in a clan! Leave your current clan first.", ephemeral=True)
                 return
                 
@@ -134,10 +127,6 @@ class ClanGroup(app_commands.Group):
             session.add(clan)
             await session.flush()
             
-            # Update user stats
-            if not user_stats:
-                user_stats = UserGuildStats(guild_id=guild_id, user_id=user_id)
-                session.add(user_stats)
             user_stats.clan_id = clan.id
             await session.commit()
             
@@ -164,13 +153,12 @@ class ClanGroup(app_commands.Group):
             await interaction.response.send_message("❌ You are already in your clan.", ephemeral=True)
             return
 
+        from bot.services.database_service import DatabaseService
         async with get_db_session() as session:
-            # Check if caller is owner of a clan
-            stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=interaction.user.id)
-            )
-            caller_stats = stats_result.scalar_one_or_none()
-            if not caller_stats or caller_stats.clan_id is None:
+            # Ensure caller exists in DB
+            caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+            
+            if caller_stats.clan_id is None:
                 await interaction.response.send_message("❌ You must be a clan leader to invite members.", ephemeral=True)
                 return
                 
@@ -180,12 +168,9 @@ class ClanGroup(app_commands.Group):
                 await interaction.response.send_message("❌ Only the clan leader can add members.", ephemeral=True)
                 return
                 
-            # Check if target is already in a clan
-            target_stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=member.id)
-            )
-            target_stats = target_stats_result.scalar_one_or_none()
-            if target_stats and target_stats.clan_id is not None:
+            # Ensure target exists in DB
+            target_stats = await DatabaseService.get_or_create_stats(session, guild_id, member.id)
+            if target_stats.clan_id is not None:
                 await interaction.response.send_message(f"❌ **{member.display_name}** is already in a clan.", ephemeral=True)
                 return
                 
@@ -216,13 +201,12 @@ class ClanGroup(app_commands.Group):
             return
 
         guild_id = interaction.guild_id
+        from bot.services.database_service import DatabaseService
         async with get_db_session() as session:
-            # Check if caller is owner of a clan
-            stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=interaction.user.id)
-            )
-            caller_stats = stats_result.scalar_one_or_none()
-            if not caller_stats or caller_stats.clan_id is None:
+            # Ensure caller exists
+            caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+            
+            if caller_stats.clan_id is None:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
                 return
                 
@@ -263,13 +247,12 @@ class ClanGroup(app_commands.Group):
             return
 
         guild_id = interaction.guild_id
+        from bot.services.database_service import DatabaseService
         async with get_db_session() as session:
-            # Check if caller is owner of a clan
-            stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=interaction.user.id)
-            )
-            caller_stats = stats_result.scalar_one_or_none()
-            if not caller_stats or caller_stats.clan_id is None:
+            # Ensure caller exists
+            caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+            
+            if caller_stats.clan_id is None:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
                 return
                 
@@ -297,20 +280,17 @@ class ClanGroup(app_commands.Group):
             return
 
         guild_id = interaction.guild_id
+        from bot.services.database_service import DatabaseService
         
         async with get_db_session() as session:
             clan = None
             if target is None:
-                # Fetch caller stats and their clan
-                stats_result = await session.execute(
-                    select(UserGuildStats)
-                    .options(selectinload(UserGuildStats.clan))
-                    .filter_by(guild_id=guild_id, user_id=interaction.user.id)
-                )
-                user_stats = stats_result.scalar_one_or_none()
-                if user_stats and user_stats.clan:
-                    clan = user_stats.clan
-                else:
+                # Ensure caller exists safely
+                user_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+                if user_stats.clan_id is not None:
+                    clan_result = await session.execute(select(Clan).filter_by(id=user_stats.clan_id))
+                    clan = clan_result.scalar_one_or_none()
+                if not clan:
                     await interaction.response.send_message("❌ You are not currently in a clan. Use `/clan create` to start one!", ephemeral=True)
                     return
             else:
@@ -328,15 +308,11 @@ class ClanGroup(app_commands.Group):
                         pass
                 
                 if user_id:
-                    stats_result = await session.execute(
-                        select(UserGuildStats)
-                        .options(selectinload(UserGuildStats.clan))
-                        .filter_by(guild_id=guild_id, user_id=user_id)
-                    )
-                    user_stats = stats_result.scalar_one_or_none()
-                    if user_stats and user_stats.clan:
-                        clan = user_stats.clan
-                    else:
+                    user_stats = await DatabaseService.get_or_create_stats(session, guild_id, user_id)
+                    if user_stats.clan_id is not None:
+                        clan_result = await session.execute(select(Clan).filter_by(id=user_stats.clan_id))
+                        clan = clan_result.scalar_one_or_none()
+                    if not clan:
                         await interaction.response.send_message("❌ That user is not in a clan.", ephemeral=True)
                         return
                 else:
@@ -387,12 +363,11 @@ class ClanGroup(app_commands.Group):
             return
 
         guild_id = interaction.guild_id
+        from bot.services.database_service import DatabaseService
         async with get_db_session() as session:
-            stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=interaction.user.id)
-            )
-            caller_stats = stats_result.scalar_one_or_none()
-            if not caller_stats or caller_stats.clan_id is None:
+            caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+            
+            if caller_stats.clan_id is None:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
                 return
                 
@@ -430,13 +405,12 @@ class ClanGroup(app_commands.Group):
             await interaction.response.send_message("❌ You cannot kick yourself. Use `/clan leave` to leave.", ephemeral=True)
             return
 
+        from bot.services.database_service import DatabaseService
         async with get_db_session() as session:
-            # Check if caller is owner of a clan
-            stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=interaction.user.id)
-            )
-            caller_stats = stats_result.scalar_one_or_none()
-            if not caller_stats or caller_stats.clan_id is None:
+            # Ensure caller exists
+            caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+            
+            if caller_stats.clan_id is None:
                 await interaction.response.send_message("❌ You must be a clan leader to kick members.", ephemeral=True)
                 return
                 
@@ -446,12 +420,9 @@ class ClanGroup(app_commands.Group):
                 await interaction.response.send_message("❌ Only the clan leader can kick members.", ephemeral=True)
                 return
                 
-            # Check if target is in the same clan
-            target_stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=member.id)
-            )
-            target_stats = target_stats_result.scalar_one_or_none()
-            if not target_stats or target_stats.clan_id != clan.id:
+            # Ensure target exists and check clan membership
+            target_stats = await DatabaseService.get_or_create_stats(session, guild_id, member.id)
+            if target_stats.clan_id != clan.id:
                 await interaction.response.send_message("❌ That member is not in your clan.", ephemeral=True)
                 return
                 
@@ -468,13 +439,12 @@ class ClanGroup(app_commands.Group):
             return
 
         guild_id = interaction.guild_id
+        from bot.services.database_service import DatabaseService
         async with get_db_session() as session:
-            # Check if caller is owner of a clan
-            stats_result = await session.execute(
-                select(UserGuildStats).filter_by(guild_id=guild_id, user_id=interaction.user.id)
-            )
-            caller_stats = stats_result.scalar_one_or_none()
-            if not caller_stats or caller_stats.clan_id is None:
+            # Ensure caller exists
+            caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+            
+            if caller_stats.clan_id is None:
                 await interaction.response.send_message("❌ You must be a clan leader to disband it.", ephemeral=True)
                 return
                 
