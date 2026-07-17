@@ -162,10 +162,16 @@ class JourneyBot(commands.Bot):
                     
                     if roles_count == 0:
                         logger.info(f"Migration: Creating default roles for pre-existing clan {clan_id}...")
+                        now = datetime.now(timezone.utc).replace(tzinfo=None)
                         # Insert Leader role
                         connection.execute(
-                            text("INSERT INTO clan_roles (clan_id, role_name, color, hierarchy_level, max_members, is_system_role, display_order) VALUES (:clan_id, 'Leader', '#FFD700', 100, 1, TRUE, 0)"),
-                            {"clan_id": clan_id}
+                            text("""
+                                INSERT INTO clan_roles 
+                                (clan_id, role_name, color, hierarchy_level, max_members, is_system_role, display_order, created_at, updated_at) 
+                                VALUES 
+                                (:clan_id, 'Leader', '#FFD700', 100, 1, TRUE, 0, :now, :now)
+                            """),
+                            {"clan_id": clan_id, "now": now}
                         )
                         leader_role_id = connection.execute(
                             text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 100"),
@@ -174,8 +180,13 @@ class JourneyBot(commands.Bot):
                         
                         # Insert Member role
                         connection.execute(
-                            text("INSERT INTO clan_roles (clan_id, role_name, color, hierarchy_level, is_system_role, display_order) VALUES (:clan_id, 'Member', '#3498DB', 1, TRUE, 0)"),
-                            {"clan_id": clan_id}
+                            text("""
+                                INSERT INTO clan_roles 
+                                (clan_id, role_name, color, hierarchy_level, is_system_role, display_order, created_at, updated_at) 
+                                VALUES 
+                                (:clan_id, 'Member', '#3498DB', 1, TRUE, 0, :now, :now)
+                            """),
+                            {"clan_id": clan_id, "now": now}
                         )
                         member_role_id = connection.execute(
                             text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 1"),
