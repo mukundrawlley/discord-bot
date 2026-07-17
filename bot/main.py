@@ -157,6 +157,33 @@ class JourneyBot(commands.Bot):
 
 bot = JourneyBot()
 
+@bot.command(name="sync")
+async def sync_commands(ctx: commands.Context):
+    """Developer command to sync slash commands."""
+    is_owner = False
+    try:
+        is_owner = await bot.is_owner(ctx.author)
+    except Exception:
+        pass
+        
+    if not ctx.author.guild_permissions.administrator and not is_owner:
+        await ctx.send("❌ You do not have permission to sync commands.")
+        return
+        
+    await ctx.send("⏳ Syncing slash commands...")
+    try:
+        # First copy global to current guild for instant local updates
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(f"✅ Sync complete! Synced {len(synced)} commands to this server.")
+        
+        # Also trigger global sync in background
+        global_synced = await bot.tree.sync()
+        await ctx.send(f"✅ Global sync complete! Synced {len(global_synced)} commands globally.")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to sync commands: `{e}`")
+        logger.error("Command sync failed", exc_info=e)
+
 @bot.event
 async def on_ready() -> None:
     logger.info(f"------ Bot Connected to Discord ------")
