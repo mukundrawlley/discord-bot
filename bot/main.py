@@ -149,12 +149,12 @@ class JourneyBot(commands.Bot):
             await self.tree.sync()
             logger.info("Synchronized global slash commands.")
 
-            # If test guild is configured, also sync to it for instant local development
+            # If test guild is configured, clear its local commands so they don't duplicate global ones
             if settings.TEST_GUILD_ID:
                 test_guild = discord.Object(id=settings.TEST_GUILD_ID)
-                self.tree.copy_global_to(guild=test_guild)
+                self.tree.clear_commands(guild=test_guild)
                 await self.tree.sync(guild=test_guild)
-                logger.info(f"Synchronized slash commands instantly to test guild: {settings.TEST_GUILD_ID}")
+                logger.info(f"Cleared local guild commands for test guild: {settings.TEST_GUILD_ID}")
         except discord.errors.Forbidden as e:
             logger.warning(
                 f"Could not synchronize slash commands: {e}. "
@@ -240,14 +240,14 @@ async def sync_commands(ctx: commands.Context):
         
     await ctx.send("⏳ Syncing slash commands...")
     try:
-        # First copy global to current guild for instant local updates
-        bot.tree.copy_global_to(guild=ctx.guild)
-        synced = await bot.tree.sync(guild=ctx.guild)
-        await ctx.send(f"✅ Sync complete! Synced {len(synced)} commands to this server.")
+        # Clear any guild-local commands from this server to resolve duplicate listings
+        bot.tree.clear_commands(guild=ctx.guild)
+        await bot.tree.sync(guild=ctx.guild)
+        await ctx.send("🧹 Cleared duplicate guild-local commands from this server.")
         
-        # Also trigger global sync in background
+        # Synchronize commands globally
         global_synced = await bot.tree.sync()
-        await ctx.send(f"✅ Global sync complete! Synced {len(global_synced)} commands globally.")
+        await ctx.send(f"✅ Global sync complete! Synced {len(global_synced)} commands globally. (Duplicates resolved!)")
     except Exception as e:
         await ctx.send(f"❌ Failed to sync commands: `{e}`")
         logger.error("Command sync failed", exc_info=e)
