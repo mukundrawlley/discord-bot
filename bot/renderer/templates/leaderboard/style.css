@@ -1,0 +1,16 @@
+/* Leaderboard template specific styles */
+
+@keyframes border-glow {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(236, 72, 153, 0.15);
+    border-color: rgba(236, 72, 153, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(236, 72, 153, 0.35);
+    border-color: rgba(236, 72, 153, 0.8);
+  }
+}
+
+.animate-glow {
+  animation: border-glow 3s infinite ease-in-out;
+}

@@ -56,11 +56,21 @@ class JourneyBot(commands.Bot):
         # Start background health server for Railway/Heroku port pings
         self.loop.create_task(start_health_server())
 
+        # Initialize Playwright browser cache
+        from bot.services.browser import BrowserManager
+        await BrowserManager.initialize()
+
         # 1. Initialize Database Tables
         logger.info("Initializing database schemas...")
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database schemas initialized.")
+
+    async def close(self) -> None:
+        logger.info("Shutdown requested. Cleaning up browser resources...")
+        from bot.services.browser import BrowserManager
+        await BrowserManager.close()
+        await super().close()
 
         # Self-healing schema modifications: dynamically add missing columns to guild_settings
         logger.info("Verifying database schema integrity...")

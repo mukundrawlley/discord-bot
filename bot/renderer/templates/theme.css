@@ -1,0 +1,72 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+:root {
+  /* Fonts */
+  --font-heading: 'Space Grotesk', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Theme Colors (RPG Dark Theme) */
+  --bg-dark: #07090e;
+  --bg-panel: rgba(14, 18, 25, 0.75);
+  --bg-row: rgba(22, 28, 38, 0.45);
+  --bg-row-hover: rgba(30, 38, 52, 0.65);
+  --border-color: rgba(255, 255, 255, 0.07);
+
+  /* Gold/Silver/Bronze/Magenta RPG Highlights */
+  --color-gold: #ffb800;
+  --color-gold-glow: rgba(255, 184, 0, 0.15);
+  
+  --color-silver: #e2e8f0;
+  --color-silver-glow: rgba(226, 232, 240, 0.15);
+  
+  --color-bronze: #cd7f32;
+  --color-bronze-glow: rgba(205, 127, 50, 0.15);
+  
+  --color-caller: #ec4899;
+  --color-caller-glow: rgba(236, 72, 153, 0.15);
+  
+  --color-text-main: #f8fafc;
+  --color-text-muted: #94a3b8;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--bg-dark);
+  color: var(--color-text-main);
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Glassmorphism panel styling */
+.glass-panel {
+  background: var(--bg-panel);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Row card highlighting classes */
+.row-rank-1 {
+  border: 1px solid var(--color-gold) !important;
+  background: linear-gradient(90deg, rgba(255, 184, 0, 0.07) 0%, rgba(22, 28, 38, 0.45) 100%) !important;
+}
+.row-rank-2 {
+  border: 1px solid var(--color-silver) !important;
+  background: linear-gradient(90deg, rgba(226, 232, 240, 0.07) 0%, rgba(22, 28, 38, 0.45) 100%) !important;
+}
+.row-rank-3 {
+  border: 1px solid var(--color-bronze) !important;
+  background: linear-gradient(90deg, rgba(205, 127, 50, 0.07) 0%, rgba(22, 28, 38, 0.45) 100%) !important;
+}
+.row-rank-caller {
+  border: 1px solid var(--color-caller) !important;
+  background: linear-gradient(90deg, rgba(236, 72, 153, 0.09) 0%, rgba(22, 28, 38, 0.6) 100%) !important;
+  box-shadow: 0 0 20px rgba(236, 72, 153, 0.12);
+}
+
+/* Typography Helpers */
+.font-heading { font-family: var(--font-heading); }
+.font-mono { font-family: var(--font-mono); }

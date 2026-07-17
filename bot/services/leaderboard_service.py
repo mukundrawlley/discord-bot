@@ -1,6 +1,7 @@
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
+from sqlalchemy.orm import selectinload
 import logging
 from datetime import datetime, timezone
 
@@ -31,6 +32,7 @@ class LeaderboardService:
             
         result = await session.execute(
             select(UserGuildStats)
+            .options(selectinload(UserGuildStats.master_path))
             .filter_by(guild_id=guild_id)
             .filter(order_col > 0) # Only include members with XP in the current filter
             .order_by(order_col.desc())
@@ -88,7 +90,9 @@ class LeaderboardService:
             
         # Get user's own stats first
         stats_result = await session.execute(
-            select(UserGuildStats).filter_by(guild_id=guild_id, user_id=user_id)
+            select(UserGuildStats)
+            .options(selectinload(UserGuildStats.master_path))
+            .filter_by(guild_id=guild_id, user_id=user_id)
         )
         user_stats = stats_result.scalar_one_or_none()
         if not user_stats:
