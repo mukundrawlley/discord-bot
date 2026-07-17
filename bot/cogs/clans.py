@@ -67,8 +67,8 @@ class JoinView(discord.ui.View):
             child.disabled = True
         self.stop()
 
-# Configure the Clan group command to be user-installable (personal command)
-@app_commands.allowed_installs(guilds=False, users=True)
+# Configure the Clan group command to be installable to both guilds (servers) and users (personal accounts)
+@app_commands.allowed_installs(guilds=True, users=True)
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 class ClanGroup(app_commands.Group):
     def __init__(self):
