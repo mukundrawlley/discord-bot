@@ -210,8 +210,13 @@ class JourneyBot(commands.Bot):
                 if "user_guild_stats" in tables:
                     user_stats_cols = [col['name'] for col in inspector.get_columns("user_guild_stats")]
                     if "clan_id" in user_stats_cols:
-                        # Fetch all stats where clan_id is set
-                        old_stats = connection.execute(text("SELECT guild_id, user_id, clan_id FROM user_guild_stats WHERE clan_id IS NOT NULL")).fetchall()
+                        # Fetch all stats where clan_id is set and the clan exists (prevents orphaned FK violation crash)
+                        old_stats = connection.execute(text(
+                            "SELECT u.guild_id, u.user_id, u.clan_id "
+                            "FROM user_guild_stats u "
+                            "JOIN clans c ON u.clan_id = c.id "
+                            "WHERE u.clan_id IS NOT NULL"
+                        )).fetchall()
                         for guild_id, user_id, clan_id in old_stats:
                             # Check if already in clan_members
                             exists = connection.execute(
