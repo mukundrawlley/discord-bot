@@ -32,6 +32,11 @@ class Guild(Base):
         back_populates="guild", 
         cascade="all, delete-orphan"
     )
+    clans = relationship(
+        "Clan", 
+        back_populates="guild", 
+        cascade="all, delete-orphan"
+    )
 
 class GuildSettings(Base):
     __tablename__ = "guild_settings"

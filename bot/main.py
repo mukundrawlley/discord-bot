@@ -66,21 +66,16 @@ class JourneyBot(commands.Bot):
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database schemas initialized.")
 
-    async def close(self) -> None:
-        logger.info("Shutdown requested. Cleaning up browser resources...")
-        from bot.services.browser import BrowserManager
-        await BrowserManager.close()
-        await super().close()
-
-        # Self-healing schema modifications: dynamically add missing columns to guild_settings
+        # Self-healing schema modifications
         logger.info("Verifying database schema integrity...")
         async with engine.begin() as conn:
             from sqlalchemy import inspect
             def check_and_add_columns(connection):
                 inspector = inspect(connection)
-                columns = [col['name'] for col in inspector.get_columns("guild_settings")]
                 
-                new_cols = [
+                # Check guild_settings table
+                guild_settings_cols = [col['name'] for col in inspector.get_columns("guild_settings")]
+                new_guild_cols = [
                     ("rank_msg_enabled", "BOOLEAN DEFAULT TRUE"),
                     ("rank_msg_template", "TEXT DEFAULT 'Congratulations {user}, you achieved the rank of {rank} on the {path} path!'"),
                     ("rank_msg_channel_id", "BIGINT"),
@@ -89,18 +84,23 @@ class JourneyBot(commands.Bot):
                     ("rank_msg_mention_user", "BOOLEAN DEFAULT TRUE"),
                     ("rank_msg_mention_role_id", "BIGINT")
                 ]
-                
-                for col_name, sql_def in new_cols:
-                    if col_name not in columns:
+                for col_name, sql_def in new_guild_cols:
+                    if col_name not in guild_settings_cols:
                         logger.info(f"Adding missing column {col_name} to guild_settings...")
                         connection.execute(text(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}"))
-            
+                
+                # Check user_guild_stats table
+                user_stats_cols = [col['name'] for col in inspector.get_columns("user_guild_stats")]
+                if "clan_id" not in user_stats_cols:
+                    logger.info("Adding missing column clan_id to user_guild_stats...")
+                    connection.execute(text("ALTER TABLE user_guild_stats ADD COLUMN clan_id INTEGER REFERENCES clans(id) ON DELETE SET NULL"))
+                    
             await conn.run_sync(check_and_add_columns)
         logger.info("Database schema integrity check completed.")
 
         # 2. Load Cogs
         logger.info("Loading extensions...")
-        cogs = ["general", "xp", "paths", "profile", "leaderboards"]
+        cogs = ["general", "xp", "paths", "profile", "leaderboards", "clans"]
         for cog in cogs:
             try:
                 await self.load_extension(f"bot.cogs.{cog}")
@@ -130,6 +130,12 @@ class JourneyBot(commands.Bot):
             )
         except Exception as e:
             logger.error(f"Error synchronizing slash commands: {e}", exc_info=True)
+
+    async def close(self) -> None:
+        logger.info("Shutdown requested. Cleaning up browser resources...")
+        from bot.services.browser import BrowserManager
+        await BrowserManager.close()
+        await super().close()
 
     def _setup_scheduler_jobs(self) -> None:
         """Sets up background cron resets for daily, weekly, and monthly leaderboards."""

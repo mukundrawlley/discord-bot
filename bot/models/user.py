@@ -39,6 +39,11 @@ class UserGuildStats(Base):
         nullable=True
     )
     
+    clan_id: Mapped[int | None] = mapped_column(
+        ForeignKey("clans.id", ondelete="SET NULL"), 
+        nullable=True
+    )
+    
     xp_daily: Mapped[int] = mapped_column(BigInteger, default=0)
     xp_weekly: Mapped[int] = mapped_column(BigInteger, default=0)
     xp_monthly: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -46,3 +51,4 @@ class UserGuildStats(Base):
     user = relationship("User", back_populates="stats")
     guild = relationship("Guild", back_populates="stats")
     master_path = relationship("MasterPath", back_populates="user_stats")
+    clan = relationship("Clan", back_populates="members")
