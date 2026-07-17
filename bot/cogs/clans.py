@@ -336,7 +336,12 @@ class ClanGroup(app_commands.Group):
             members = list(members_result.scalars())
 
         # Build Embed Info Sheet
-        leader_member = interaction.guild.get_member(clan.owner_id)
+        leader_member = interaction.guild.get_member(clan.owner_id) if interaction.guild else None
+        if not leader_member:
+            try:
+                leader_member = await interaction.client.fetch_user(clan.owner_id)
+            except Exception:
+                pass
         leader_name = leader_member.display_name if leader_member else f"ID: {clan.owner_id}"
         
         embed = discord.Embed(
@@ -349,7 +354,12 @@ class ClanGroup(app_commands.Group):
         
         members_list = []
         for idx, m in enumerate(members):
-            member_obj = interaction.guild.get_member(m.user_id)
+            member_obj = interaction.guild.get_member(m.user_id) if interaction.guild else None
+            if not member_obj:
+                try:
+                    member_obj = await interaction.client.fetch_user(m.user_id)
+                except Exception:
+                    pass
             name = member_obj.display_name if member_obj else f"User {m.user_id}"
             if m.user_id == clan.owner_id:
                 role_suffix = " (Leader) 👑"
