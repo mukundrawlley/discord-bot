@@ -115,14 +115,16 @@ class JourneyBot(commands.Bot):
 
         # 4. Synchronize Commands
         try:
+            # Always sync globally so user-installable (personal) commands register
+            await self.tree.sync()
+            logger.info("Synchronized global slash commands.")
+
+            # If test guild is configured, also sync to it for instant local development
             if settings.TEST_GUILD_ID:
                 test_guild = discord.Object(id=settings.TEST_GUILD_ID)
                 self.tree.copy_global_to(guild=test_guild)
                 await self.tree.sync(guild=test_guild)
                 logger.info(f"Synchronized slash commands instantly to test guild: {settings.TEST_GUILD_ID}")
-            else:
-                await self.tree.sync()
-                logger.info("Synchronized slash commands globally (this may take up to an hour).")
         except discord.errors.Forbidden as e:
             logger.warning(
                 f"Could not synchronize slash commands: {e}. "
