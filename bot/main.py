@@ -97,6 +97,9 @@ class JourneyBot(commands.Bot):
                 if "clan_id" not in user_stats_cols:
                     logger.info("Adding missing column clan_id to user_guild_stats...")
                     connection.execute(text("ALTER TABLE user_guild_stats ADD COLUMN clan_id INTEGER REFERENCES clans(id) ON DELETE SET NULL"))
+                if "is_vice_captain" not in user_stats_cols:
+                    logger.info("Adding missing column is_vice_captain to user_guild_stats...")
+                    connection.execute(text("ALTER TABLE user_guild_stats ADD COLUMN is_vice_captain BOOLEAN DEFAULT FALSE"))
                     
             await conn.run_sync(check_and_add_columns)
         logger.info("Database schema integrity check completed.")

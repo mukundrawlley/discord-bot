@@ -159,13 +159,17 @@ class ClanGroup(app_commands.Group):
             caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
             
             if caller_stats.clan_id is None:
-                await interaction.response.send_message("❌ You must be a clan leader to invite members.", ephemeral=True)
+                await interaction.response.send_message("❌ You must be in a clan to invite members.", ephemeral=True)
                 return
                 
             clan_result = await session.execute(select(Clan).filter_by(id=caller_stats.clan_id))
             clan = clan_result.scalar_one()
-            if clan.owner_id != interaction.user.id:
-                await interaction.response.send_message("❌ Only the clan leader can add members.", ephemeral=True)
+            
+            is_leader = clan.owner_id == interaction.user.id
+            is_vice = caller_stats.is_vice_captain
+            
+            if not is_leader and not is_vice:
+                await interaction.response.send_message("❌ Only the clan leader or a vice-captain can invite members.", ephemeral=True)
                 return
                 
             # Ensure target exists in DB
@@ -347,8 +351,13 @@ class ClanGroup(app_commands.Group):
         for idx, m in enumerate(members):
             member_obj = interaction.guild.get_member(m.user_id)
             name = member_obj.display_name if member_obj else f"User {m.user_id}"
-            is_leader = " 👑" if m.user_id == clan.owner_id else ""
-            members_list.append(f"{idx+1}. <@{m.user_id}> ({name}){is_leader}")
+            if m.user_id == clan.owner_id:
+                role_suffix = " (Leader) 👑"
+            elif m.is_vice_captain:
+                role_suffix = " (Vice-Captain) 🛡️"
+            else:
+                role_suffix = ""
+            members_list.append(f"{idx+1}. <@{m.user_id}> ({name}){role_suffix}")
             
         members_str = "\n".join(members_list) if members_list else "*No members.*"
         embed.add_field(name=f"👥 Members ({len(members)})", value=members_str, inline=False)
@@ -378,13 +387,14 @@ class ClanGroup(app_commands.Group):
                 # Owner leaving disbands the clan
                 clan_name = clan.name
                 await session.execute(
-                    update(UserGuildStats).filter_by(clan_id=clan.id).values(clan_id=None)
+                    update(UserGuildStats).filter_by(clan_id=clan.id).values(clan_id=None, is_vice_captain=False)
                 )
                 await session.execute(delete(Clan).filter_by(id=clan.id))
                 await session.commit()
                 await interaction.response.send_message(f"💥 Clan **{clan_name}** has been disbanded because the leader left.")
             else:
                 caller_stats.clan_id = None
+                caller_stats.is_vice_captain = False
                 await session.commit()
                 await interaction.response.send_message(f"👋 You have left the clan **{clan.name}**.")
 
@@ -427,6 +437,7 @@ class ClanGroup(app_commands.Group):
                 return
                 
             target_stats.clan_id = None
+            target_stats.is_vice_captain = False
             await session.commit()
             
         await interaction.response.send_message(f"👢 **{member.display_name}** has been kicked from the clan **{clan.name}**.")
@@ -457,12 +468,104 @@ class ClanGroup(app_commands.Group):
             clan_name = clan.name
             # Nullify clan_id for all members
             await session.execute(
-                update(UserGuildStats).filter_by(clan_id=clan.id).values(clan_id=None)
+                update(UserGuildStats).filter_by(clan_id=clan.id).values(clan_id=None, is_vice_captain=False)
             )
             await session.execute(delete(Clan).filter_by(id=clan.id))
             await session.commit()
             
         await interaction.response.send_message(f"💥 Clan **{clan_name}** has been successfully disbanded.")
+
+    @app_commands.command(name="promote", description="Promotes a member to Vice-Captain.")
+    @app_commands.describe(member="The member to promote.")
+    async def clan_promote(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member
+    ) -> None:
+        """Promotes a member to Vice-Captain."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
+        if member.id == interaction.user.id:
+            await interaction.response.send_message("❌ You are already the clan leader.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild_id
+        from bot.services.database_service import DatabaseService
+        async with get_db_session() as session:
+            # Check if caller is leader of a clan
+            caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+            if caller_stats.clan_id is None:
+                await interaction.response.send_message("❌ You must be a clan leader to promote members.", ephemeral=True)
+                return
+                
+            clan_result = await session.execute(select(Clan).filter_by(id=caller_stats.clan_id))
+            clan = clan_result.scalar_one()
+            if clan.owner_id != interaction.user.id:
+                await interaction.response.send_message("❌ Only the clan leader can promote members.", ephemeral=True)
+                return
+                
+            # Check if target is in the same clan
+            target_stats = await DatabaseService.get_or_create_stats(session, guild_id, member.id)
+            if target_stats.clan_id != clan.id:
+                await interaction.response.send_message("❌ That member is not in your clan.", ephemeral=True)
+                return
+                
+            if target_stats.is_vice_captain:
+                await interaction.response.send_message(f"❌ **{member.display_name}** is already a vice-captain.", ephemeral=True)
+                return
+                
+            target_stats.is_vice_captain = True
+            await session.commit()
+            
+        await interaction.response.send_message(f"🛡️ **{member.display_name}** has been promoted to **Vice-Captain** of the clan **{clan.name}**!")
+
+    @app_commands.command(name="demote", description="Demotes a Vice-Captain back to normal member.")
+    @app_commands.describe(member="The Vice-Captain to demote.")
+    async def clan_demote(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member
+    ) -> None:
+        """Demotes a Vice-Captain back to normal member."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
+        if member.id == interaction.user.id:
+            await interaction.response.send_message("❌ You cannot demote yourself.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild_id
+        from bot.services.database_service import DatabaseService
+        async with get_db_session() as session:
+            # Check if caller is leader of a clan
+            caller_stats = await DatabaseService.get_or_create_stats(session, guild_id, interaction.user.id)
+            if caller_stats.clan_id is None:
+                await interaction.response.send_message("❌ You must be a clan leader to demote members.", ephemeral=True)
+                return
+                
+            clan_result = await session.execute(select(Clan).filter_by(id=caller_stats.clan_id))
+            clan = clan_result.scalar_one()
+            if clan.owner_id != interaction.user.id:
+                await interaction.response.send_message("❌ Only the clan leader can demote members.", ephemeral=True)
+                return
+                
+            # Check if target is in the same clan
+            target_stats = await DatabaseService.get_or_create_stats(session, guild_id, member.id)
+            if target_stats.clan_id != clan.id:
+                await interaction.response.send_message("❌ That member is not in your clan.", ephemeral=True)
+                return
+                
+            if not target_stats.is_vice_captain:
+                await interaction.response.send_message(f"❌ **{member.display_name}** is not a vice-captain.", ephemeral=True)
+                return
+                
+            target_stats.is_vice_captain = False
+            await session.commit()
+            
+        await interaction.response.send_message(f"🛡️ **{member.display_name}** has been demoted back to a normal member in the clan **{clan.name}**.")
 
 class Clans(commands.Cog):
     def __init__(self, bot: commands.Bot):

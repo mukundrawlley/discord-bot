@@ -44,6 +44,8 @@ class UserGuildStats(Base):
         nullable=True
     )
     
+    is_vice_captain: Mapped[bool] = mapped_column(default=False)
+    
     xp_daily: Mapped[int] = mapped_column(BigInteger, default=0)
     xp_weekly: Mapped[int] = mapped_column(BigInteger, default=0)
     xp_monthly: Mapped[int] = mapped_column(BigInteger, default=0)
