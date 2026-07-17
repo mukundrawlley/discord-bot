@@ -164,7 +164,7 @@ class JourneyBot(commands.Bot):
                         logger.info(f"Migration: Creating default roles for pre-existing clan {clan_id}...")
                         # Insert Leader role
                         connection.execute(
-                            text("INSERT INTO clan_roles (clan_id, role_name, color, hierarchy_level, max_members, is_system_role) VALUES (:clan_id, 'Leader', '#FFD700', 100, 1, TRUE)"),
+                            text("INSERT INTO clan_roles (clan_id, role_name, color, hierarchy_level, max_members, is_system_role, display_order) VALUES (:clan_id, 'Leader', '#FFD700', 100, 1, TRUE, 0)"),
                             {"clan_id": clan_id}
                         )
                         leader_role_id = connection.execute(
@@ -174,7 +174,7 @@ class JourneyBot(commands.Bot):
                         
                         # Insert Member role
                         connection.execute(
-                            text("INSERT INTO clan_roles (clan_id, role_name, color, hierarchy_level, is_system_role) VALUES (:clan_id, 'Member', '#3498DB', 1, TRUE)"),
+                            text("INSERT INTO clan_roles (clan_id, role_name, color, hierarchy_level, is_system_role, display_order) VALUES (:clan_id, 'Member', '#3498DB', 1, TRUE, 0)"),
                             {"clan_id": clan_id}
                         )
                         member_role_id = connection.execute(
