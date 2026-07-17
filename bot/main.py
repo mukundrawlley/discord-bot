@@ -102,169 +102,192 @@ class JourneyBot(commands.Bot):
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database schemas initialized.")
 
-        # Self-healing schema modifications
+        # Self-healing schema modifications & migrations
         logger.info("Verifying database schema integrity...")
-        async with engine.begin() as conn:
-            from sqlalchemy import inspect
-            def check_and_add_columns(connection):
-                inspector = inspect(connection)
-                
-                # Check guild_settings table
-                guild_settings_cols = [col['name'] for col in inspector.get_columns("guild_settings")]
-                new_guild_cols = [
-                    ("rank_msg_enabled", "BOOLEAN DEFAULT TRUE"),
-                    ("rank_msg_template", "TEXT DEFAULT 'Congratulations {user}, you achieved the rank of {rank} on the {path} path!'"),
-                    ("rank_msg_channel_id", "BIGINT"),
-                    ("rank_msg_embed", "BOOLEAN DEFAULT FALSE"),
-                    ("rank_msg_image_url", "VARCHAR(256)"),
-                    ("rank_msg_mention_user", "BOOLEAN DEFAULT TRUE"),
-                    ("rank_msg_mention_role_id", "BIGINT")
-                ]
-                for col_name, sql_def in new_guild_cols:
-                    if col_name not in guild_settings_cols:
-                        logger.info(f"Adding missing column {col_name} to guild_settings...")
-                        connection.execute(text(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}"))
-                
-                # Check clans table
-                if "clans" in inspector.get_table_names():
-                    clans_cols = [col['name'] for col in inspector.get_columns("clans")]
-                    if "approved" not in clans_cols:
-                        logger.info("Adding missing column approved to clans...")
-                        connection.execute(text("ALTER TABLE clans ADD COLUMN approved BOOLEAN DEFAULT FALSE"))
-                    if "approved_by" not in clans_cols:
-                        logger.info("Adding missing column approved_by to clans...")
-                        connection.execute(text("ALTER TABLE clans ADD COLUMN approved_by BIGINT"))
-                    if "approved_at" not in clans_cols:
-                        logger.info("Adding missing column approved_at to clans...")
-                        connection.execute(text("ALTER TABLE clans ADD COLUMN approved_at TIMESTAMP"))
+        try:
+            async with engine.begin() as conn:
+                from sqlalchemy import inspect
+                def check_and_add_columns(connection):
+                    inspector = inspect(connection)
                     
-            await conn.run_sync(check_and_add_columns)
-            
-            def migrate_old_clan_data(connection):
-                from datetime import datetime, timezone
-                inspector = inspect(connection)
-                tables = inspector.get_table_names()
-                
-                if "clans" not in tables:
-                    return
+                    # Check guild_settings table
+                    guild_settings_cols = [col['name'] for col in inspector.get_columns("guild_settings")]
+                    new_guild_cols = [
+                        ("rank_msg_enabled", "BOOLEAN DEFAULT TRUE"),
+                        ("rank_msg_template", "TEXT DEFAULT 'Congratulations {user}, you achieved the rank of {rank} on the {path} path!'"),
+                        ("rank_msg_channel_id", "BIGINT"),
+                        ("rank_msg_embed", "BOOLEAN DEFAULT FALSE"),
+                        ("rank_msg_image_url", "VARCHAR(256)"),
+                        ("rank_msg_mention_user", "BOOLEAN DEFAULT TRUE"),
+                        ("rank_msg_mention_role_id", "BIGINT")
+                    ]
+                    for col_name, sql_def in new_guild_cols:
+                        if col_name not in guild_settings_cols:
+                            logger.info(f"Adding missing column {col_name} to guild_settings...")
+                            connection.execute(text(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}"))
                     
-                # 1. Auto-approve pre-existing clans
-                connection.execute(text("UPDATE clans SET approved = TRUE WHERE approved IS NULL OR approved = FALSE"))
-                
-                # 2. For each clan, ensure default roles exist in clan_roles
-                clans = connection.execute(text("SELECT id, owner_id FROM clans")).fetchall()
-                for clan_id, owner_id in clans:
-                    # Check if roles exist
-                    roles_count = connection.execute(
-                        text("SELECT COUNT(*) FROM clan_roles WHERE clan_id = :clan_id"),
-                        {"clan_id": clan_id}
-                    ).scalar()
+                    # Check clans table
+                    if "clans" in inspector.get_table_names():
+                        clans_cols = [col['name'] for col in inspector.get_columns("clans")]
+                        if "approved" not in clans_cols:
+                            logger.info("Adding missing column approved to clans...")
+                            connection.execute(text("ALTER TABLE clans ADD COLUMN approved BOOLEAN DEFAULT FALSE"))
+                        if "approved_by" not in clans_cols:
+                            logger.info("Adding missing column approved_by to clans...")
+                            connection.execute(text("ALTER TABLE clans ADD COLUMN approved_by BIGINT"))
+                        if "approved_at" not in clans_cols:
+                            logger.info("Adding missing column approved_at to clans...")
+                            connection.execute(text("ALTER TABLE clans ADD COLUMN approved_at TIMESTAMP"))
                     
-                    if roles_count == 0:
-                        logger.info(f"Migration: Creating default roles for pre-existing clan {clan_id}...")
-                        now = datetime.now(timezone.utc).replace(tzinfo=None)
-                        # Insert Leader role
-                        connection.execute(
-                            text("""
-                                INSERT INTO clan_roles 
-                                (clan_id, role_name, color, hierarchy_level, max_members, is_system_role, display_order, created_at, updated_at) 
-                                VALUES 
-                                (:clan_id, 'Leader', '#FFD700', 100, 1, TRUE, 0, :now, :now)
-                            """),
-                            {"clan_id": clan_id, "now": now}
-                        )
-                        leader_role_id = connection.execute(
-                            text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 100"),
+                    # Check clan_role_permissions table columns dynamically
+                    if "clan_role_permissions" in inspector.get_table_names():
+                        from bot.models.clan import ClanRolePermission
+                        model_cols = [c.name for c in ClanRolePermission.__table__.columns if c.name != "role_id"]
+                        db_cols = [col['name'] for col in inspector.get_columns("clan_role_permissions")]
+                        
+                        for col_name in model_cols:
+                            if col_name not in db_cols:
+                                logger.info(f"Adding missing permission column {col_name} to clan_role_permissions...")
+                                default_val = "TRUE" if col_name == "can_deposit_coins" else "FALSE"
+                                connection.execute(text(f"ALTER TABLE clan_role_permissions ADD COLUMN {col_name} BOOLEAN DEFAULT {default_val}"))
+                        
+                await conn.run_sync(check_and_add_columns)
+                
+                def migrate_old_clan_data(connection):
+                    from datetime import datetime, timezone
+                    inspector = inspect(connection)
+                    tables = inspector.get_table_names()
+                    
+                    if "clans" not in tables:
+                        return
+                        
+                    # 1. Auto-approve pre-existing clans
+                    connection.execute(text("UPDATE clans SET approved = TRUE WHERE approved IS NULL OR approved = FALSE"))
+                    
+                    # 2. For each clan, ensure default roles exist in clan_roles
+                    clans = connection.execute(text("SELECT id, owner_id FROM clans")).fetchall()
+                    for clan_id, owner_id in clans:
+                        # Check if roles exist
+                        roles_count = connection.execute(
+                            text("SELECT COUNT(*) FROM clan_roles WHERE clan_id = :clan_id"),
                             {"clan_id": clan_id}
                         ).scalar()
                         
-                        # Insert Member role
-                        connection.execute(
-                            text("""
-                                INSERT INTO clan_roles 
-                                (clan_id, role_name, color, hierarchy_level, is_system_role, display_order, created_at, updated_at) 
-                                VALUES 
-                                (:clan_id, 'Member', '#3498DB', 1, TRUE, 0, :now, :now)
-                            """),
-                            {"clan_id": clan_id, "now": now}
-                        )
-                        member_role_id = connection.execute(
-                            text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 1"),
-                            {"clan_id": clan_id}
-                        ).scalar()
-                        
-                        # Insert default permissions for Leader
-                        if leader_role_id:
+                        if roles_count == 0:
+                            logger.info(f"Migration: Creating default roles for pre-existing clan {clan_id}...")
+                            now = datetime.now(timezone.utc).replace(tzinfo=None)
+                            # Insert Leader role
                             connection.execute(
                                 text("""
-                                    INSERT INTO clan_role_permissions 
-                                    (role_id, can_invite, can_kick, can_accept_applications, can_reject_applications, 
-                                     can_promote, can_demote, can_edit_clan_description, can_edit_clan_banner, 
-                                     can_edit_clan_icon, can_edit_clan_name, can_manage_roles, can_manage_permissions, 
-                                     can_manage_bank, can_withdraw_coins, can_start_clan_war, can_declare_alliance, 
-                                     can_manage_diplomacy, can_create_events, can_manage_quests, can_ping_clan, 
-                                     can_view_logs, can_transfer_leadership, can_delete_clan)
+                                    INSERT INTO clan_roles 
+                                    (clan_id, role_name, color, hierarchy_level, max_members, is_system_role, display_order, created_at, updated_at) 
                                     VALUES 
-                                    (:role_id, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, 
-                                     TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE)
+                                    (:clan_id, 'Leader', '#FFD700', 100, 1, TRUE, 0, :now, :now)
                                 """),
-                                {"role_id": leader_role_id}
+                                {"clan_id": clan_id, "now": now}
                             )
-                        # Insert default permissions for Member
-                        if member_role_id:
-                            connection.execute(
-                                text("INSERT INTO clan_role_permissions (role_id, can_deposit_coins) VALUES (:role_id, TRUE)"),
-                                {"role_id": member_role_id}
-                            )
-                
-                # 3. Check if user_guild_stats table has a clan_id column
-                if "user_guild_stats" in tables:
-                    user_stats_cols = [col['name'] for col in inspector.get_columns("user_guild_stats")]
-                    if "clan_id" in user_stats_cols:
-                        # Fetch all stats where clan_id is set and the clan exists (prevents orphaned FK violation crash)
-                        old_stats = connection.execute(text(
-                            "SELECT u.guild_id, u.user_id, u.clan_id "
-                            "FROM user_guild_stats u "
-                            "JOIN clans c ON u.clan_id = c.id "
-                            "WHERE u.clan_id IS NOT NULL"
-                        )).fetchall()
-                        for guild_id, user_id, clan_id in old_stats:
-                            # Check if already in clan_members
-                            exists = connection.execute(
-                                text("SELECT 1 FROM clan_members WHERE guild_id = :guild_id AND user_id = :user_id"),
-                                {"guild_id": guild_id, "user_id": user_id}
+                            leader_role_id = connection.execute(
+                                text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 100"),
+                                {"clan_id": clan_id}
                             ).scalar()
                             
-                            if not exists:
-                                # Find owner
-                                owner_id = connection.execute(text("SELECT owner_id FROM clans WHERE id = :clan_id"), {"clan_id": clan_id}).scalar()
-                                
-                                # Find roles
-                                if owner_id == user_id:
-                                    role_id = connection.execute(
-                                        text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 100"),
-                                        {"clan_id": clan_id}
-                                    ).scalar()
-                                else:
-                                    role_id = connection.execute(
-                                        text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 1"),
-                                        {"clan_id": clan_id}
-                                    ).scalar()
+                            # Insert Member role
+                            connection.execute(
+                                text("""
+                                    INSERT INTO clan_roles 
+                                    (clan_id, role_name, color, hierarchy_level, is_system_role, display_order, created_at, updated_at) 
+                                    VALUES 
+                                    (:clan_id, 'Member', '#3498DB', 1, TRUE, 0, :now, :now)
+                                """),
+                                {"clan_id": clan_id, "now": now}
+                            )
+                            member_role_id = connection.execute(
+                                text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 1"),
+                                {"clan_id": clan_id}
+                            ).scalar()
+                            
+                            from bot.models.clan import get_default_permission_values
+                            
+                            # Insert default permissions for Leader
+                            if leader_role_id:
+                                exists = connection.execute(
+                                    text("SELECT 1 FROM clan_role_permissions WHERE role_id = :role_id"),
+                                    {"role_id": leader_role_id}
+                                ).scalar()
+                                if not exists:
+                                    leader_perms = get_default_permission_values(is_leader=True)
+                                    cols = ["role_id"] + list(leader_perms.keys())
+                                    vals = [":role_id"] + [f":{k}" for k in leader_perms.keys()]
+                                    stmt = f"INSERT INTO clan_role_permissions ({', '.join(cols)}) VALUES ({', '.join(vals)})"
+                                    params = {"role_id": leader_role_id}
+                                    params.update(leader_perms)
+                                    connection.execute(text(stmt), params)
                                     
-                                connection.execute(
-                                    text("INSERT INTO clan_members (guild_id, user_id, clan_id, role_id, join_date) VALUES (:guild_id, :user_id, :clan_id, :role_id, :join_date)"),
-                                    {
-                                        "guild_id": guild_id,
-                                        "user_id": user_id,
-                                        "clan_id": clan_id,
-                                        "role_id": role_id,
-                                        "join_date": datetime.now(timezone.utc).replace(tzinfo=None)
-                                    }
-                                )
-                                logger.info(f"Migration: Restored member {user_id} to clan {clan_id} with role {role_id}")
+                            # Insert default permissions for Member
+                            if member_role_id:
+                                exists = connection.execute(
+                                    text("SELECT 1 FROM clan_role_permissions WHERE role_id = :role_id"),
+                                    {"role_id": member_role_id}
+                                ).scalar()
+                                if not exists:
+                                    member_perms = get_default_permission_values(is_leader=False)
+                                    cols = ["role_id"] + list(member_perms.keys())
+                                    vals = [":role_id"] + [f":{k}" for k in member_perms.keys()]
+                                    stmt = f"INSERT INTO clan_role_permissions ({', '.join(cols)}) VALUES ({', '.join(vals)})"
+                                    params = {"role_id": member_role_id}
+                                    params.update(member_perms)
+                                    connection.execute(text(stmt), params)
+                    
+                    # 3. Check if user_guild_stats table has a clan_id column
+                    if "user_guild_stats" in tables:
+                        user_stats_cols = [col['name'] for col in inspector.get_columns("user_guild_stats")]
+                        if "clan_id" in user_stats_cols:
+                            # Fetch all stats where clan_id is set and the clan exists (prevents orphaned FK violation crash)
+                            old_stats = connection.execute(text(
+                                "SELECT u.guild_id, u.user_id, u.clan_id "
+                                "FROM user_guild_stats u "
+                                "JOIN clans c ON u.clan_id = c.id "
+                                "WHERE u.clan_id IS NOT NULL"
+                            )).fetchall()
+                            for guild_id, user_id, clan_id in old_stats:
+                                # Check if already in clan_members
+                                exists = connection.execute(
+                                    text("SELECT 1 FROM clan_members WHERE guild_id = :guild_id AND user_id = :user_id"),
+                                    {"guild_id": guild_id, "user_id": user_id}
+                                ).scalar()
                                 
-            await conn.run_sync(migrate_old_clan_data)
-        logger.info("Database schema integrity check completed.")
+                                if not exists:
+                                    # Find owner
+                                    owner_id = connection.execute(text("SELECT owner_id FROM clans WHERE id = :clan_id"), {"clan_id": clan_id}).scalar()
+                                    
+                                    # Find roles
+                                    if owner_id == user_id:
+                                        role_id = connection.execute(
+                                            text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 100"),
+                                            {"clan_id": clan_id}
+                                        ).scalar()
+                                    else:
+                                        role_id = connection.execute(
+                                            text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 1"),
+                                            {"clan_id": clan_id}
+                                        ).scalar()
+                                        
+                                    connection.execute(
+                                        text("INSERT INTO clan_members (guild_id, user_id, clan_id, role_id, join_date) VALUES (:guild_id, :user_id, :clan_id, :role_id, :join_date)"),
+                                        {
+                                            "guild_id": guild_id,
+                                            "user_id": user_id,
+                                            "clan_id": clan_id,
+                                            "role_id": role_id,
+                                            "join_date": datetime.now(timezone.utc).replace(tzinfo=None)
+                                        }
+                                    )
+                                    logger.info(f"Migration: Restored member {user_id} to clan {clan_id} with role {role_id}")
+                                    
+                await conn.run_sync(migrate_old_clan_data)
+            logger.info("Database schema integrity check completed.")
+        except Exception as e:
+            logger.error("❌ Database migration or integrity check failed! Startup continuing...", exc_info=e)
 
         # 2. Load Cogs
         logger.info("Loading extensions...")

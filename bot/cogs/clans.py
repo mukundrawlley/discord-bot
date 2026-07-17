@@ -267,8 +267,8 @@ class RoleCreateModal(discord.ui.Modal, title="Create Clan Role"):
             await session.flush()
             
             # Initialize empty permissions
-            perms = ClanRolePermission(role_id=role.id)
-            session.add(perms)
+            from bot.models.clan import create_default_permissions
+            perms = await create_default_permissions(session, role.id, is_leader=False)
             
             # Log action
             await write_audit_log(session, self.clan_id, interaction.user.id, "role_created", None, name)
@@ -856,36 +856,10 @@ class ClanGroup(app_commands.Group):
             session.add_all([leader_role, member_role])
             await session.flush()
             
-            # Setup leader permissions
-            leader_perms = ClanRolePermission(
-                role_id=leader_role.id,
-                can_invite=True,
-                can_kick=True,
-                can_accept_applications=True,
-                can_reject_applications=True,
-                can_promote=True,
-                can_demote=True,
-                can_edit_clan_description=True,
-                can_edit_clan_banner=True,
-                can_edit_clan_icon=True,
-                can_edit_clan_name=True,
-                can_manage_roles=True,
-                can_manage_permissions=True,
-                can_manage_bank=True,
-                can_withdraw_coins=True,
-                can_start_clan_war=True,
-                can_declare_alliance=True,
-                can_manage_diplomacy=True,
-                can_create_events=True,
-                can_manage_quests=True,
-                can_ping_clan=True,
-                can_view_logs=True,
-                can_transfer_leadership=True,
-                can_delete_clan=True
-            )
-            # Member has deposit permission by default
-            member_perms = ClanRolePermission(role_id=member_role.id, can_deposit_coins=True)
-            session.add_all([leader_perms, member_perms])
+            # Setup default permissions via the centralized helper
+            from bot.models.clan import create_default_permissions
+            leader_perms = await create_default_permissions(session, leader_role.id, is_leader=True)
+            member_perms = await create_default_permissions(session, member_role.id, is_leader=False)
             
             # Add clan owner to Leader role
             membership = ClanMember(
