@@ -126,6 +126,115 @@ class JourneyBot(commands.Bot):
                         connection.execute(text(f"ALTER TABLE guild_settings ADD COLUMN {col_name} {sql_def}"))
                     
             await conn.run_sync(check_and_add_columns)
+            
+            def migrate_old_clan_data(connection):
+                from datetime import datetime, timezone
+                inspector = inspect(connection)
+                tables = inspector.get_table_names()
+                
+                if "clans" not in tables:
+                    return
+                    
+                # 1. Auto-approve pre-existing clans
+                connection.execute(text("UPDATE clans SET approved = TRUE WHERE approved IS NULL OR approved = FALSE"))
+                
+                # 2. For each clan, ensure default roles exist in clan_roles
+                clans = connection.execute(text("SELECT id, owner_id FROM clans")).fetchall()
+                for clan_id, owner_id in clans:
+                    # Check if roles exist
+                    roles_count = connection.execute(
+                        text("SELECT COUNT(*) FROM clan_roles WHERE clan_id = :clan_id"),
+                        {"clan_id": clan_id}
+                    ).scalar()
+                    
+                    if roles_count == 0:
+                        logger.info(f"Migration: Creating default roles for pre-existing clan {clan_id}...")
+                        # Insert Leader role
+                        connection.execute(
+                            text("INSERT INTO clan_roles (clan_id, role_name, color, hierarchy_level, max_members, is_system_role) VALUES (:clan_id, 'Leader', '#FFD700', 100, 1, TRUE)"),
+                            {"clan_id": clan_id}
+                        )
+                        leader_role_id = connection.execute(
+                            text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 100"),
+                            {"clan_id": clan_id}
+                        ).scalar()
+                        
+                        # Insert Member role
+                        connection.execute(
+                            text("INSERT INTO clan_roles (clan_id, role_name, color, hierarchy_level, is_system_role) VALUES (:clan_id, 'Member', '#3498DB', 1, TRUE)"),
+                            {"clan_id": clan_id}
+                        )
+                        member_role_id = connection.execute(
+                            text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 1"),
+                            {"clan_id": clan_id}
+                        ).scalar()
+                        
+                        # Insert default permissions for Leader
+                        if leader_role_id:
+                            connection.execute(
+                                text("""
+                                    INSERT INTO clan_role_permissions 
+                                    (role_id, can_invite, can_kick, can_accept_applications, can_reject_applications, 
+                                     can_promote, can_demote, can_edit_clan_description, can_edit_clan_banner, 
+                                     can_edit_clan_icon, can_edit_clan_name, can_manage_roles, can_manage_permissions, 
+                                     can_manage_bank, can_withdraw_coins, can_start_clan_war, can_declare_alliance, 
+                                     can_manage_diplomacy, can_create_events, can_manage_quests, can_ping_clan, 
+                                     can_view_logs, can_transfer_leadership, can_delete_clan)
+                                    VALUES 
+                                    (:role_id, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, 
+                                     TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE)
+                                """),
+                                {"role_id": leader_role_id}
+                            )
+                        # Insert default permissions for Member
+                        if member_role_id:
+                            connection.execute(
+                                text("INSERT INTO clan_role_permissions (role_id, can_deposit_coins) VALUES (:role_id, TRUE)"),
+                                {"role_id": member_role_id}
+                            )
+                
+                # 3. Check if user_guild_stats table has a clan_id column
+                if "user_guild_stats" in tables:
+                    user_stats_cols = [col['name'] for col in inspector.get_columns("user_guild_stats")]
+                    if "clan_id" in user_stats_cols:
+                        # Fetch all stats where clan_id is set
+                        old_stats = connection.execute(text("SELECT guild_id, user_id, clan_id FROM user_guild_stats WHERE clan_id IS NOT NULL")).fetchall()
+                        for guild_id, user_id, clan_id in old_stats:
+                            # Check if already in clan_members
+                            exists = connection.execute(
+                                text("SELECT 1 FROM clan_members WHERE guild_id = :guild_id AND user_id = :user_id"),
+                                {"guild_id": guild_id, "user_id": user_id}
+                            ).scalar()
+                            
+                            if not exists:
+                                # Find owner
+                                owner_id = connection.execute(text("SELECT owner_id FROM clans WHERE id = :clan_id"), {"clan_id": clan_id}).scalar()
+                                
+                                # Find roles
+                                if owner_id == user_id:
+                                    role_id = connection.execute(
+                                        text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 100"),
+                                        {"clan_id": clan_id}
+                                    ).scalar()
+                                else:
+                                    role_id = connection.execute(
+                                        text("SELECT id FROM clan_roles WHERE clan_id = :clan_id AND hierarchy_level = 1"),
+                                        {"clan_id": clan_id}
+                                    ).scalar()
+                                    
+                                connection.execute(
+                                    text("INSERT INTO clan_members (guild_id, user_id, clan_id, role_id, join_date) VALUES (:guild_id, :user_id, :clan_id, :role_id, :join_date)"),
+                                    {
+                                        "guild_id": guild_id,
+                                        "user_id": user_id,
+                                        "clan_id": clan_id,
+                                        "role_id": role_id,
+                                        "join_date": datetime.now(timezone.utc).replace(tzinfo=None)
+                                    }
+                                )
+                                logger.info(f"Migration: Restored member {user_id} to clan {clan_id} with role {role_id}")
+                                
+            await conn.run_sync(migrate_old_clan_data)
         logger.info("Database schema integrity check completed.")
 
         # 2. Load Cogs
