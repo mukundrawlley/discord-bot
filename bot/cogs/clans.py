@@ -1341,12 +1341,43 @@ class ClanGroup(app_commands.Group):
             )
             clan_roles = list(roles_result.scalars())
             
+        # Resolve names in parallel to prevent sequential REST bottlenecks
+        import asyncio
+        async def resolve_name(u_id: int) -> str:
+            if interaction.guild:
+                member_obj = interaction.guild.get_member(u_id)
+                if member_obj:
+                    return member_obj.display_name
+            user_obj = interaction.client.get_user(u_id)
+            if user_obj:
+                return user_obj.display_name
+            try:
+                user_obj = await interaction.client.fetch_user(u_id)
+                return user_obj.display_name
+            except Exception:
+                return f"User {u_id}"
+
+        # Resolve leader name and all member names in parallel
+        user_ids_to_resolve = [clan.owner_id] + [m.user_id for m in members]
+        seen = set()
+        unique_ids = []
+        for uid in user_ids_to_resolve:
+            if uid not in seen:
+                seen.add(uid)
+                unique_ids.append(uid)
+                
+        tasks = [resolve_name(uid) for uid in unique_ids]
+        resolved_results = await asyncio.gather(*tasks)
+        name_map = dict(zip(unique_ids, resolved_results))
+        
+        leader_name = name_map.get(clan.owner_id, f"ID: {clan.owner_id}")
+
         embed = discord.Embed(
             title=f"🛡️ Clan: {clan.name} " + ("" if clan.approved else "(Pending Approval ⏳)"),
             description=clan.description or "*No description set.*",
             color=discord.Color.blue()
         )
-        embed.add_field(name="👑 Leader", value=f"<@{clan.owner_id}>", inline=True)
+        embed.add_field(name="👑 Leader", value=f"<@{clan.owner_id}> ({leader_name})", inline=True)
         embed.add_field(name="📅 Created", value=clan.created_at.strftime("%Y-%m-%d"), inline=True)
         
         # Sort members by hierarchy level descending
@@ -1354,6 +1385,7 @@ class ClanGroup(app_commands.Group):
         
         members_list = []
         for idx, m in enumerate(members):
+            name = name_map.get(m.user_id, f"User {m.user_id}")
             role_suffix = ""
             if m.role:
                 if m.role.hierarchy_level == 100:
@@ -1361,7 +1393,7 @@ class ClanGroup(app_commands.Group):
                 else:
                     role_suffix = f" ({m.role.role_name})"
                     
-            members_list.append(f"{idx+1}. <@{m.user_id}>{role_suffix}")
+            members_list.append(f"{idx+1}. <@{m.user_id}> ({name}){role_suffix}")
             
         members_str = "\n".join(members_list) if members_list else "*No members.*"
         embed.add_field(name=f"👥 Members ({len(members)})", value=members_str, inline=False)
