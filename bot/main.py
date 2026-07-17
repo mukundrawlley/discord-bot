@@ -57,8 +57,11 @@ class JourneyBot(commands.Bot):
         self.loop.create_task(start_health_server())
 
         # Initialize Playwright browser cache
-        from bot.services.browser import BrowserManager
-        await BrowserManager.initialize()
+        try:
+            from bot.services.browser import BrowserManager
+            await BrowserManager.initialize()
+        except Exception as e:
+            logger.warning(f"Failed to initialize Playwright browser manager: {e}. Leaderboard image rendering will fall back to text.")
 
         # 1. Initialize Database Tables
         logger.info("Initializing database schemas...")

@@ -406,8 +406,35 @@ class Leaderboards(commands.Cog):
             view.message = message
             
         except Exception as e:
-            logger.error(f"Renderer Service failed: {e}", exc_info=True)
-            await interaction.followup.send("❌ Error rendering leaderboard image.", ephemeral=True)
+            logger.warning(f"Renderer Service failed, falling back to text leaderboard: {e}")
+            
+            description_lines = []
+            if not leaderboard_data:
+                description_lines.append("*No members have earned XP in this timeframe yet.*")
+            else:
+                for stats in leaderboard_data:
+                    medal = "🥇" if stats["rank"] == 1 else "🥈" if stats["rank"] == 2 else "🥉" if stats["rank"] == 3 else f"#{stats['rank']}"
+                    description_lines.append(
+                        f"{medal} **{stats['username']}** - Level {stats['level']} ({stats['score']:,} XP)"
+                    )
+            
+            embed = discord.Embed(
+                title=f"📈 Journey Leaderboard - {title_timeframe} XP",
+                description="\n".join(description_lines),
+                color=discord.Color.gold()
+            )
+            
+            if user_stats:
+                rank_str = f"#{user_rank}" if user_rank > 0 else "Unranked"
+                embed.set_footer(
+                    text=f"Your Standing: {rank_str} | {caller_username} | {caller_score:,} XP | Page 1/{total_pages}"
+                )
+            else:
+                embed.set_footer(
+                    text=f"Your Standing: Unranked | {caller_username} | 0 XP | Page 1/{total_pages}"
+                )
+                
+            await interaction.followup.send(embed=embed)
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Leaderboards(bot))
