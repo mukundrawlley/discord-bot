@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands
 import logging
 import asyncio
+import os
+from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.future import select
@@ -20,6 +22,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Journey.Main")
 
+async def health_check(request):
+    return web.Response(text="OK", status=200)
+
+async def start_health_server() -> None:
+    port = int(os.environ.get("PORT", 8080))
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Health check web server started on port {port}")
+
 # Define discord client intents
 intents = discord.Intents.default()
 intents.message_content = True
@@ -36,6 +53,9 @@ class JourneyBot(commands.Bot):
         self.scheduler = AsyncIOScheduler()
 
     async def setup_hook(self) -> None:
+        # Start background health server for Railway/Heroku port pings
+        self.loop.create_task(start_health_server())
+
         # 1. Initialize Database Tables
         logger.info("Initializing database schemas...")
         async with engine.begin() as conn:
