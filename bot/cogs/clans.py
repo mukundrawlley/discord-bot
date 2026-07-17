@@ -73,6 +73,9 @@ class JoinView(discord.ui.View):
             child.disabled = True
         self.stop()
 
+# Configure the Clan group command to be user-installable (personal command)
+@app_commands.allowed_installs(guilds=False, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 class ClanGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="clan", description="Clan management commands.")
@@ -89,6 +92,10 @@ class ClanGroup(app_commands.Group):
         description: str | None = None
     ) -> None:
         """Creates a new clan in the guild."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
         if len(name) > 64:
             await interaction.response.send_message("❌ Clan name cannot exceed 64 characters.", ephemeral=True)
             return
@@ -144,6 +151,10 @@ class ClanGroup(app_commands.Group):
         member: discord.Member
     ) -> None:
         """Invites a user to your clan."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
         guild_id = interaction.guild_id
         if member.bot:
             await interaction.response.send_message("❌ You cannot add bots to a clan.", ephemeral=True)
@@ -196,6 +207,10 @@ class ClanGroup(app_commands.Group):
         new_name: str
     ) -> None:
         """Renames the caller's clan."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
         if len(new_name) > 64:
             await interaction.response.send_message("❌ Clan name cannot exceed 64 characters.", ephemeral=True)
             return
@@ -239,6 +254,10 @@ class ClanGroup(app_commands.Group):
         new_description: str
     ) -> None:
         """Updates the description of the caller's clan."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
         if len(new_description) > 256:
             await interaction.response.send_message("❌ Description cannot exceed 256 characters.", ephemeral=True)
             return
@@ -273,6 +292,10 @@ class ClanGroup(app_commands.Group):
         target: str | None = None
     ) -> None:
         """Shows details about a specific clan, member's clan, or the caller's clan."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
         guild_id = interaction.guild_id
         
         async with get_db_session() as session:
@@ -359,6 +382,10 @@ class ClanGroup(app_commands.Group):
     @app_commands.command(name="leave", description="Leaves your current clan.")
     async def clan_leave(self, interaction: discord.Interaction) -> None:
         """Leaves the clan. Disbands it if the caller is the leader."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
         guild_id = interaction.guild_id
         async with get_db_session() as session:
             stats_result = await session.execute(
@@ -394,6 +421,10 @@ class ClanGroup(app_commands.Group):
         member: discord.Member
     ) -> None:
         """Kicks a member from the caller's clan."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
         guild_id = interaction.guild_id
         if member.id == interaction.user.id:
             await interaction.response.send_message("❌ You cannot kick yourself. Use `/clan leave` to leave.", ephemeral=True)
@@ -432,6 +463,10 @@ class ClanGroup(app_commands.Group):
     @app_commands.command(name="disband", description="Disbands your clan.")
     async def clan_disband(self, interaction: discord.Interaction) -> None:
         """Disbands the caller's clan."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
+            return
+
         guild_id = interaction.guild_id
         async with get_db_session() as session:
             # Check if caller is owner of a clan
