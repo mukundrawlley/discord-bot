@@ -413,10 +413,23 @@ class XP(commands.Cog):
                             except discord.Forbidden:
                                 pass
 
+            # Check if any configuration parameters were actually passed to update
+            any_updates = any(
+                x is not None for x in [
+                    enabled, min_xp, max_xp, cooldown, mode, xp_per_word, curve,
+                    multiplier, max_level, rank_mode, keep_path_role, msg_enabled,
+                    msg_template, msg_channel, msg_embed, msg_image, msg_mention_user,
+                    msg_mention_role, rank_msg_enabled, rank_msg_template,
+                    rank_msg_channel, rank_msg_embed, rank_msg_image,
+                    rank_msg_mention_user, rank_msg_mention_role
+                ]
+            )
+            
             await session.flush()
             enabled_status = "Enabled" if settings.xp_enabled else "Disabled"
+            header = "✅ **Successfully updated server XP & Leveling settings.**" if any_updates else "ℹ️ **Current Server XP & Leveling settings:**"
             msg = (
-                f"✅ **Successfully updated server XP & Leveling settings.**\n"
+                f"{header}\n"
                 f"⚙️ **System Status:** {enabled_status}\n"
                 f"📈 **Mode:** {settings.xp_mode} | **Curve:** {settings.xp_curve}\n"
                 f"🛡️ **Anti-Spam:** Min length: {settings.anti_spam_min_length} | Cooldown: {settings.xp_cooldown}s"
