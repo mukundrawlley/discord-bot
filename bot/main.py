@@ -128,6 +128,15 @@ class JourneyBot(commands.Bot):
                         if "approved_at" not in clans_cols:
                             logger.info("Adding missing column approved_at to clans...")
                             connection.execute(text("ALTER TABLE clans ADD COLUMN approved_at TIMESTAMP"))
+                        if "discord_text_channel_id" not in clans_cols:
+                            logger.info("Adding missing column discord_text_channel_id to clans...")
+                            connection.execute(text("ALTER TABLE clans ADD COLUMN discord_text_channel_id BIGINT"))
+                        if "discord_voice_channel_id" not in clans_cols:
+                            logger.info("Adding missing column discord_voice_channel_id to clans...")
+                            connection.execute(text("ALTER TABLE clans ADD COLUMN discord_voice_channel_id BIGINT"))
+                        if "discord_category_id" not in clans_cols:
+                            logger.info("Adding missing column discord_category_id to clans...")
+                            connection.execute(text("ALTER TABLE clans ADD COLUMN discord_category_id BIGINT"))
                     
                     # Check clan_role_permissions table columns dynamically
                     if "clan_role_permissions" in inspector.get_table_names():

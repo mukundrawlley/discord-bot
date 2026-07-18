@@ -33,6 +33,10 @@ class Clan(Base):
     approved_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     
+    discord_text_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    discord_voice_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    discord_category_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)

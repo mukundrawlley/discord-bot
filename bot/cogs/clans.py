@@ -1127,6 +1127,7 @@ class ClanGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="clan", description="MMORPG Dynamic Clan Hierarchy Systems.")
         self.add_command(self.onboarding_group)
+        self.add_command(self.channel_group)
 
     @app_commands.command(name="create", description="Creates a new clan (requires Staff approval).")
     @app_commands.describe(
@@ -1189,8 +1190,20 @@ class ClanGroup(app_commands.Group):
         await interaction.response.send_message(f"🎉 Clan **{name}** has been registered! It is now pending **Staff Approval** before roles are initialized.")
 
     @app_commands.command(name="approve", description="Approves a pending clan (Staff Only).")
-    @app_commands.describe(name="The name of the clan to approve.")
-    async def clan_approve(self, interaction: discord.Interaction, name: str) -> None:
+    @app_commands.describe(
+        name="The name of the clan to approve.",
+        create_text="Create a private text channel for this clan? (Default: True)",
+        create_voice="Create a private voice channel for this clan? (Default: True)",
+        category_name="Name of the category to place channels in. (Default: '🏆 CLAN CATEGORY')"
+    )
+    async def clan_approve(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        create_text: bool = True,
+        create_voice: bool = True,
+        category_name: str = "🏆 CLAN CATEGORY"
+    ) -> None:
         """Staff command to approve a clan and initialize dynamic roles."""
         if interaction.guild_id is None:
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
@@ -1277,6 +1290,47 @@ class ClanGroup(app_commands.Group):
             clan_settings = await session.get(ClanSettings, clan.id)
             if clan_settings:
                 clan_settings.join_type = "apply"
+                
+            # Setup channels if requested
+            if create_text or create_voice:
+                try:
+                    category = discord.utils.get(interaction.guild.categories, name=category_name)
+                    if not category:
+                        category = await interaction.guild.create_category(
+                            name=category_name,
+                            reason="Journey Clan Category Setup"
+                        )
+                    
+                    clan.discord_category_id = category.id
+                    
+                    # Define overrides
+                    overwrites = {
+                        interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                        member_d_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+                        leader_d_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True),
+                        interaction.guild.me.top_role: discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
+                    }
+                    
+                    if create_text:
+                        text_channel = await interaction.guild.create_text_channel(
+                            name=f"💬-{clan.name.lower().replace(' ', '-')}",
+                            category=category,
+                            overwrites=overwrites,
+                            topic=f"Official private channel for {clan.name}.",
+                            reason=f"Journey Clan Approval: Initialize private text channel."
+                        )
+                        clan.discord_text_channel_id = text_channel.id
+                        
+                    if create_voice:
+                        voice_channel = await interaction.guild.create_voice_channel(
+                            name=f"🔊-{clan.name.lower().replace(' ', '-')}",
+                            category=category,
+                            overwrites=overwrites,
+                            reason=f"Journey Clan Approval: Initialize private voice channel."
+                        )
+                        clan.discord_voice_channel_id = voice_channel.id
+                except Exception as e:
+                    logger.warning(f"Failed to create Discord channels during clan approval: {e}")
             
             # Log action
             await write_audit_log(session, clan.id, interaction.user.id, "clan_approved")
@@ -1290,7 +1344,7 @@ class ClanGroup(app_commands.Group):
                 except discord.Forbidden:
                     pass
                     
-        await interaction.response.send_message(f"✅ Clan **{clan.name}** has been approved! Ranks have been initialized and visual roles registered in Discord.")
+        await interaction.response.send_message(f"✅ Clan **{clan.name}** has been approved! Ranks have been initialized and visual roles/channels registered in Discord.")
 
     @app_commands.command(name="role", description="Manages clan roles/hierarchy (Leader only).")
     async def clan_role(self, interaction: discord.Interaction) -> None:
@@ -1664,6 +1718,114 @@ class ClanGroup(app_commands.Group):
         view = ApplicationsView(clan_id, applications, interaction.user.id, user_names)
         embed = await view.get_current_app_embed(interaction)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    # ==============================================================================
+    # CLAN CHANNEL ADMINISTRATION GROUP
+    # ==============================================================================
+    channel_group = app_commands.Group(name="channel", description="Clan channel settings (Leader only).")
+
+    @channel_group.command(name="access", description="Configures channel permission overrides for a custom clan role.")
+    @app_commands.describe(
+        role_name="The name of your custom clan role.",
+        can_view="Allow members with this role to view the private clan channels?",
+        can_message="Allow members with this role to send messages in the private text channel?"
+    )
+    async def channel_access(
+        self,
+        interaction: discord.Interaction,
+        role_name: str,
+        can_view: bool,
+        can_message: bool
+    ) -> None:
+        """Sets custom channel permission overrides for a clan role."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild_id
+        
+        async with get_db_session() as session:
+            # 1. Fetch user's membership to verify leadership
+            exec_member = await get_member_membership(session, guild_id, interaction.user.id)
+            if not exec_member:
+                await interaction.followup.send("❌ You are not in a clan.", ephemeral=True)
+                return
+                
+            clan = exec_member.clan
+            if clan.owner_id != interaction.user.id:
+                await interaction.followup.send("❌ Only the Clan Leader can configure channel access overrides.", ephemeral=True)
+                return
+                
+            # 2. Fetch the target role inside the clan
+            role_result = await session.execute(
+                select(ClanRole).filter_by(clan_id=clan.id).filter(ClanRole.role_name.ilike(role_name))
+            )
+            target_role = role_result.scalar_one_or_none()
+            if not target_role:
+                await interaction.followup.send(f"❌ Role '{role_name}' not found in your clan.", ephemeral=True)
+                return
+                
+            if not target_role.discord_role_id:
+                await interaction.followup.send(f"❌ The role '{target_role.role_name}' is not linked to any Discord role.", ephemeral=True)
+                return
+                
+            discord_role = interaction.guild.get_role(target_role.discord_role_id)
+            if not discord_role:
+                await interaction.followup.send(f"❌ Could not find the Discord role matching '{target_role.role_name}'.", ephemeral=True)
+                return
+                
+            # 3. Fetch text & voice channels
+            text_channel = interaction.guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
+            voice_channel = interaction.guild.get_channel(clan.discord_voice_channel_id) if clan.discord_voice_channel_id else None
+            
+            if not text_channel and not voice_channel:
+                await interaction.followup.send("❌ There are no private channels set up for this clan.", ephemeral=True)
+                return
+                
+            # Apply overrides
+            try:
+                # Text Channel overrides
+                if text_channel:
+                    await text_channel.set_permissions(
+                        discord_role,
+                        view_channel=can_view,
+                        send_messages=can_message,
+                        read_message_history=can_view,
+                        reason=f"Journey Clan Channel Access Config: Modified by Clan Leader."
+                    )
+                    
+                # Voice Channel overrides
+                if voice_channel:
+                    await voice_channel.set_permissions(
+                        discord_role,
+                        view_channel=can_view,
+                        connect=can_view,
+                        reason=f"Journey Clan Channel Access Config: Modified by Clan Leader."
+                    )
+            except discord.Forbidden:
+                await interaction.followup.send("❌ Journey Bot lacks 'Manage Channels' or 'Manage Roles' permissions to modify overrides.", ephemeral=True)
+                return
+                
+            # Log action
+            await write_audit_log(
+                session,
+                clan.id,
+                interaction.user.id,
+                "channel_access_updated",
+                target_role.role_name,
+                f"View: {can_view}, Message: {can_message}"
+            )
+            await session.commit()
+            
+        status_msg = (
+            f"✅ **Permissions Updated!**\n"
+            f"Role: **{target_role.role_name}**\n"
+            f"👁️ **Can View:** {'🟢 Yes' if can_view else '🔴 No'}\n"
+            f"💬 **Can Message:** {'🟢 Yes' if can_message else '🔴 No'}\n"
+            f"Applied changes to the private channels."
+        )
+        await interaction.followup.send(status_msg, ephemeral=True)
 
     # ==============================================================================
     # ONBOARDING SETUP COMMANDS GROUP
@@ -2208,6 +2370,10 @@ class ClanGroup(app_commands.Group):
             )
             clan_roles = list(roles_result.scalars())
             
+            # Fetch channels before deleting DB records
+            text_chan = interaction.guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
+            voice_chan = interaction.guild.get_channel(clan.discord_voice_channel_id) if clan.discord_voice_channel_id else None
+            
             # Fetch all members to strip roles later
             members_result = await session.execute(
                 select(ClanMember).filter_by(clan_id=clan.id)
@@ -2217,6 +2383,18 @@ class ClanGroup(app_commands.Group):
             await session.execute(delete(ClanMember).filter_by(clan_id=clan.id))
             await session.execute(delete(Clan).filter_by(id=clan.id))
             await session.commit()
+            
+            # Delete private channels
+            if text_chan:
+                try:
+                    await text_chan.delete(reason="Journey Clan Disband")
+                except discord.Forbidden:
+                    pass
+            if voice_chan:
+                try:
+                    await voice_chan.delete(reason="Journey Clan Disband")
+                except discord.Forbidden:
+                    pass
             
             # Delete discord roles
             for r in clan_roles:
@@ -2262,6 +2440,10 @@ class ClanGroup(app_commands.Group):
             )
             clan_roles = list(roles_result.scalars())
             
+            # Fetch channels before deleting DB records
+            text_chan = interaction.guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
+            voice_chan = interaction.guild.get_channel(clan.discord_voice_channel_id) if clan.discord_voice_channel_id else None
+            
             # Fetch all members to strip roles later
             members_result = await session.execute(
                 select(ClanMember).filter_by(clan_id=clan.id)
@@ -2271,6 +2453,18 @@ class ClanGroup(app_commands.Group):
             await session.execute(delete(ClanMember).filter_by(clan_id=clan.id))
             await session.execute(delete(Clan).filter_by(id=clan.id))
             await session.commit()
+            
+            # Delete private channels
+            if text_chan:
+                try:
+                    await text_chan.delete(reason="Journey Clan Force Disband by Staff")
+                except discord.Forbidden:
+                    pass
+            if voice_chan:
+                try:
+                    await voice_chan.delete(reason="Journey Clan Force Disband by Staff")
+                except discord.Forbidden:
+                    pass
             
             # Delete discord roles
             for r in clan_roles:
