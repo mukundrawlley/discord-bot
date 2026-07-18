@@ -8,6 +8,7 @@ from sqlalchemy.future import select
 from sqlalchemy import delete, update
 from sqlalchemy.orm import selectinload
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from bot.database.connection import get_db_session
 from bot.models.clan import (
     Clan,
@@ -1126,8 +1127,6 @@ class AuditLogsView(discord.ui.View):
 class ClanGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="clan", description="MMORPG Dynamic Clan Hierarchy Systems.")
-        self.add_command(self.onboarding_group)
-        self.add_command(self.channel_group)
 
     @app_commands.command(name="create", description="Creates a new clan (requires Staff approval).")
     @app_commands.describe(
