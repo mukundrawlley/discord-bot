@@ -225,8 +225,11 @@ class XP(commands.Cog):
 
         guild_id = interaction.guild_id
         async with get_db_session() as session:
-            stats = await DatabaseService.get_or_create_stats(session, guild_id, target_member.id)
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            if not guild.settings.xp_enabled:
+                await interaction.response.send_message("❌ The XP/Leveling system is currently disabled in this server.", ephemeral=True)
+                return
+            stats = await DatabaseService.get_or_create_stats(session, guild_id, target_member.id)
             
             curve = get_curve(guild.settings.xp_curve)
             curr_lvl_req = curve.cumulative_xp_for_level(stats.level, XPService.BASE_XP, float(guild.settings.xp_multiplier))
@@ -411,8 +414,15 @@ class XP(commands.Cog):
                                 pass
 
             await session.flush()
+            enabled_status = "Enabled" if settings.xp_enabled else "Disabled"
+            msg = (
+                f"✅ **Successfully updated server XP & Leveling settings.**\n"
+                f"⚙️ **System Status:** {enabled_status}\n"
+                f"📈 **Mode:** {settings.xp_mode} | **Curve:** {settings.xp_curve}\n"
+                f"🛡️ **Anti-Spam:** Min length: {settings.anti_spam_min_length} | Cooldown: {settings.xp_cooldown}s"
+            )
             
-        await interaction.followup.send("✅ Successfully updated server XP & Leveling settings.", ephemeral=True)
+        await interaction.followup.send(msg, ephemeral=True)
 
     @xp_group.command(name="add", description="[Admin Only] Adds XP to a member.")
     @app_commands.default_permissions(manage_guild=True)
@@ -432,6 +442,9 @@ class XP(commands.Cog):
 
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            if not guild.settings.xp_enabled:
+                await interaction.followup.send("❌ The XP/Leveling system is currently disabled in this server.", ephemeral=True)
+                return
             settings = guild.settings
             
             old_lvl, new_lvl, leveled_up = await XPService.add_xp(
@@ -467,6 +480,9 @@ class XP(commands.Cog):
 
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            if not guild.settings.xp_enabled:
+                await interaction.followup.send("❌ The XP/Leveling system is currently disabled in this server.", ephemeral=True)
+                return
             settings = guild.settings
             
             old_lvl, new_lvl, _ = await XPService.add_xp(
@@ -519,6 +535,9 @@ class XP(commands.Cog):
 
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            if not guild.settings.xp_enabled:
+                await interaction.followup.send("❌ The XP/Leveling system is currently disabled in this server.", ephemeral=True)
+                return
             settings = guild.settings
             stats = await DatabaseService.get_or_create_stats(session, guild_id, member.id)
             
@@ -579,6 +598,9 @@ class XP(commands.Cog):
 
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            if not guild.settings.xp_enabled:
+                await interaction.followup.send("❌ The XP/Leveling system is currently disabled in this server.", ephemeral=True)
+                return
             settings = guild.settings
             
             # Calculate required XP for the target level
@@ -639,6 +661,9 @@ class XP(commands.Cog):
 
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            if not guild.settings.xp_enabled:
+                await interaction.followup.send("❌ The XP/Leveling system is currently disabled in this server.", ephemeral=True)
+                return
             settings = guild.settings
             curve = get_curve(settings.xp_curve)
             
