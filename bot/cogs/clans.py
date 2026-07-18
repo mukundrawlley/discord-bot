@@ -1429,6 +1429,52 @@ class ClanGroup(app_commands.Group):
         
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="description", description="Updates your clan's description.")
+    @app_commands.describe(text="The new description (max 256 characters, or leave blank to clear).")
+    async def clan_description(self, interaction: discord.Interaction, text: str | None = None) -> None:
+        """Updates the description of the caller's clan."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+
+        if text and len(text) > 256:
+            await interaction.response.send_message("❌ Description cannot exceed 256 characters.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild_id
+        async with get_db_session() as session:
+            membership = await get_member_membership(session, guild_id, interaction.user.id)
+            if not membership:
+                await interaction.response.send_message("❌ You are not currently in a clan.", ephemeral=True)
+                return
+
+            clan = membership.clan
+            
+            # Check permissions
+            is_owner = clan.owner_id == interaction.user.id
+            has_perm = membership.role and membership.role.permissions and getattr(membership.role.permissions, "can_edit_clan_description", False)
+            
+            if not (is_owner or has_perm):
+                await interaction.response.send_message("❌ You do not have permission to edit the clan description.", ephemeral=True)
+                return
+
+            old_desc = clan.description
+            clan.description = text
+            
+            # Log action
+            await write_audit_log(
+                session,
+                clan.id,
+                interaction.user.id,
+                "description_updated",
+                old_desc,
+                text
+            )
+            await session.commit()
+
+        desc_msg = f"updated to: **{text}**" if text else "cleared."
+        await interaction.response.send_message(f"✅ Clan description has been {desc_msg}")
+
     @app_commands.command(name="leave", description="Leaves your current clan.")
     async def clan_leave(self, interaction: discord.Interaction) -> None:
         """Leaves the clan. Disbands it if owner leaves."""
