@@ -321,7 +321,10 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
             old_name = db_role.role_name
             db_role.role_name = name
             db_role.color = color_val
-            db_role.max_members = limit_val
+            if db_role.hierarchy_level == 100:
+                db_role.max_members = 1
+            else:
+                db_role.max_members = limit_val
             
             # Sync Discord role properties
             if db_role.discord_role_id:
@@ -417,10 +420,6 @@ class RoleManagerView(discord.ui.View):
 
     async def edit_callback(self, interaction: discord.Interaction):
         selected_role = next(r for r in self.roles if r.id == self.selected_role_id)
-        if selected_role.is_system_role and selected_role.hierarchy_level == 100:
-            await interaction.response.send_message("❌ The Leader system role metadata cannot be modified.", ephemeral=True)
-            return
-            
         modal = RoleEditModal(selected_role)
         await interaction.response.send_modal(modal)
 
@@ -1586,6 +1585,60 @@ class ClanGroup(app_commands.Group):
                             pass
                             
         await interaction.response.send_message(f"💥 Clan **{clan_name}** has been successfully disbanded.")
+
+    @app_commands.command(name="force_disband", description="Forcibly disbands any clan (Staff Only).")
+    @app_commands.describe(name="The name of the clan to forcibly disband.")
+    async def clan_force_disband(self, interaction: discord.Interaction, name: str) -> None:
+        """Forcibly disbands any clan in the server."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+            
+        # Verify Staff permissions
+        perms = interaction.user.guild_permissions
+        is_staff = perms.administrator or perms.manage_guild or perms.manage_roles or (interaction.guild.owner_id == interaction.user.id)
+        if not is_staff:
+            await interaction.response.send_message("❌ Only server administrators or staff can force disband clans.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild_id
+        async with get_db_session() as session:
+            clan_result = await session.execute(
+                select(Clan).filter_by(guild_id=guild_id).filter(Clan.name.ilike(name))
+            )
+            clan = clan_result.scalars().first()
+            if not clan:
+                await interaction.response.send_message(f"❌ No clan found with name '{name}'.", ephemeral=True)
+                return
+                
+            clan_name = clan.name
+            
+            roles_result = await session.execute(
+                select(ClanRole).filter_by(clan_id=clan.id)
+            )
+            clan_roles = list(roles_result.scalars())
+            
+            # Fetch all members to strip roles later
+            members_result = await session.execute(
+                select(ClanMember).filter_by(clan_id=clan.id)
+            )
+            members_list = list(members_result.scalars())
+            
+            await session.execute(delete(ClanMember).filter_by(clan_id=clan.id))
+            await session.execute(delete(Clan).filter_by(id=clan.id))
+            await session.commit()
+            
+            # Delete discord roles
+            for r in clan_roles:
+                if r.discord_role_id:
+                    d_role = interaction.guild.get_role(r.discord_role_id)
+                    if d_role:
+                        try:
+                            await d_role.delete(reason="Journey Clan Force Disband by Staff")
+                        except discord.Forbidden:
+                            pass
+                            
+        await interaction.response.send_message(f"💥 Clan **{clan_name}** has been forcibly disbanded by staff.")
 
 
 class Clans(commands.Cog):
