@@ -3,34 +3,7 @@ from sqlalchemy import BigInteger, ForeignKey, String, Text, Integer, DateTime, 
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from bot.database.base import Base
 
-def get_default_permission_values(is_leader: bool = False) -> dict[str, bool]:
-    """Centralized definition of role permission defaults."""
-    return {
-        "can_invite": is_leader,
-        "can_kick": is_leader,
-        "can_accept_applications": is_leader,
-        "can_reject_applications": is_leader,
-        "can_promote": is_leader,
-        "can_demote": is_leader,
-        "can_edit_clan_description": is_leader,
-        "can_edit_clan_banner": is_leader,
-        "can_edit_clan_icon": is_leader,
-        "can_edit_clan_name": is_leader,
-        "can_manage_roles": is_leader,
-        "can_manage_permissions": is_leader,
-        "can_manage_bank": is_leader,
-        "can_deposit_coins": True,  # Defaults to True for everyone
-        "can_withdraw_coins": is_leader,
-        "can_start_clan_war": is_leader,
-        "can_declare_alliance": is_leader,
-        "can_manage_diplomacy": is_leader,
-        "can_create_events": is_leader,
-        "can_manage_quests": is_leader,
-        "can_ping_clan": is_leader,
-        "can_view_logs": is_leader,
-        "can_transfer_leadership": is_leader,
-        "can_delete_clan": is_leader
-    }
+from bot.permissions.defaults import get_default_permission_values, PERMISSIONS_REGISTRY
 
 async def create_default_permissions(session, role_id: int, is_leader: bool = False) -> "ClanRolePermission":
     """Safely creates default permissions for a role, ensuring idempotency."""
@@ -140,32 +113,17 @@ class ClanRolePermission(Base):
     
     role_id: Mapped[int] = mapped_column(Integer, ForeignKey("clan_roles.id", ondelete="CASCADE"), primary_key=True)
     
-    can_invite: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_kick: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_accept_applications: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_reject_applications: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_promote: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_demote: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_edit_clan_description: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_edit_clan_banner: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_edit_clan_icon: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_edit_clan_name: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_manage_roles: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_manage_permissions: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_manage_bank: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_deposit_coins: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
-    can_withdraw_coins: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_start_clan_war: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_declare_alliance: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_manage_diplomacy: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_create_events: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_manage_quests: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_ping_clan: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_view_logs: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_transfer_leadership: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    can_delete_clan: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
-    
     role = relationship("ClanRole", back_populates="permissions")
+
+# Dynamically attach permission columns from registry
+for key, config in PERMISSIONS_REGISTRY.items():
+    default_val = config["default"]
+    server_def_str = "true" if default_val else "false"
+    setattr(
+        ClanRolePermission,
+        key,
+        mapped_column(Boolean, default=default_val, server_default=text(server_def_str))
+    )
 
 class ClanAuditLog(Base):
     __tablename__ = "clan_audit_logs"

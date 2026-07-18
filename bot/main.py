@@ -49,7 +49,7 @@ class JourneyBot(commands.Bot):
             command_prefix="j!",
             intents=intents,
             help_command=None,
-            allowed_mentions=discord.AllowedMentions(everyone=False, here=False)
+            allowed_mentions=discord.AllowedMentions(everyone=False)
         )
         self.scheduler = AsyncIOScheduler()
 
@@ -143,13 +143,15 @@ class JourneyBot(commands.Bot):
                     # Check clan_role_permissions table columns dynamically
                     if "clan_role_permissions" in inspector.get_table_names():
                         from bot.models.clan import ClanRolePermission
+                        from bot.permissions.defaults import PERMISSIONS_REGISTRY
                         model_cols = [c.name for c in ClanRolePermission.__table__.columns if c.name != "role_id"]
                         db_cols = [col['name'] for col in inspector.get_columns("clan_role_permissions")]
                         
                         for col_name in model_cols:
                             if col_name not in db_cols:
                                 logger.info(f"Adding missing permission column {col_name} to clan_role_permissions...")
-                                default_val = "TRUE" if col_name == "can_deposit_coins" else "FALSE"
+                                default_val_bool = PERMISSIONS_REGISTRY.get(col_name, {}).get("default", False)
+                                default_val = "TRUE" if default_val_bool else "FALSE"
                                 connection.execute(text(f"ALTER TABLE clan_role_permissions ADD COLUMN {col_name} BOOLEAN DEFAULT {default_val}"))
                         
                 await conn.run_sync(check_and_add_columns)
@@ -208,6 +210,8 @@ class JourneyBot(commands.Bot):
                             ).scalar()
                             
                             from bot.models.clan import get_default_permission_values
+                            from sqlalchemy import insert
+                            from bot.models.clan import ClanRolePermission
                             
                             # Insert default permissions for Leader
                             if leader_role_id:
@@ -217,12 +221,8 @@ class JourneyBot(commands.Bot):
                                 ).scalar()
                                 if not exists:
                                     leader_perms = get_default_permission_values(is_leader=True)
-                                    cols = ["role_id"] + list(leader_perms.keys())
-                                    vals = [":role_id"] + [f":{k}" for k in leader_perms.keys()]
-                                    stmt = f"INSERT INTO clan_role_permissions ({', '.join(cols)}) VALUES ({', '.join(vals)})"
-                                    params = {"role_id": leader_role_id}
-                                    params.update(leader_perms)
-                                    connection.execute(text(stmt), params)
+                                    stmt = insert(ClanRolePermission).values(role_id=leader_role_id, **leader_perms)
+                                    connection.execute(stmt)
                                     
                             # Insert default permissions for Member
                             if member_role_id:
@@ -232,12 +232,8 @@ class JourneyBot(commands.Bot):
                                 ).scalar()
                                 if not exists:
                                     member_perms = get_default_permission_values(is_leader=False)
-                                    cols = ["role_id"] + list(member_perms.keys())
-                                    vals = [":role_id"] + [f":{k}" for k in member_perms.keys()]
-                                    stmt = f"INSERT INTO clan_role_permissions ({', '.join(cols)}) VALUES ({', '.join(vals)})"
-                                    params = {"role_id": member_role_id}
-                                    params.update(member_perms)
-                                    connection.execute(text(stmt), params)
+                                    stmt = insert(ClanRolePermission).values(role_id=member_role_id, **member_perms)
+                                    connection.execute(stmt)
                     
                     # 3. Check if user_guild_stats table has a clan_id column
                     if "user_guild_stats" in tables:
