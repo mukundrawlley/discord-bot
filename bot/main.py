@@ -13,6 +13,7 @@ from bot.config.settings import settings
 from bot.database.base import Base
 from bot.database.connection import engine, get_db_session
 from bot.models.guild import Guild
+import bot.models
 from bot.services.leaderboard_service import LeaderboardService
 
 # Configure logging
@@ -141,6 +142,25 @@ class JourneyBot(commands.Bot):
                                 default_val_bool = PERMISSIONS_REGISTRY.get(col_name, {}).get("default", False)
                                 default_val = "TRUE" if default_val_bool else "FALSE"
                                 connection.execute(text(f"ALTER TABLE clan_role_permissions ADD COLUMN {col_name} BOOLEAN DEFAULT {default_val}"))
+                        
+                        # Check clan_applications table columns dynamically
+                        if "clan_applications" in inspector.get_table_names():
+                            app_cols = [col['name'] for col in inspector.get_columns("clan_applications")]
+                            if "guild_id" not in app_cols:
+                                logger.info("Adding missing column guild_id to clan_applications...")
+                                connection.execute(text("ALTER TABLE clan_applications ADD COLUMN guild_id BIGINT"))
+                            if "application_source" not in app_cols:
+                                logger.info("Adding missing column application_source to clan_applications...")
+                                connection.execute(text("ALTER TABLE clan_applications ADD COLUMN application_source VARCHAR(32) DEFAULT 'manual'"))
+                            if "reviewed_at" not in app_cols:
+                                logger.info("Adding missing column reviewed_at to clan_applications...")
+                                connection.execute(text("ALTER TABLE clan_applications ADD COLUMN reviewed_at TIMESTAMP"))
+                            if "reviewed_by" not in app_cols:
+                                logger.info("Adding missing column reviewed_by to clan_applications...")
+                                connection.execute(text("ALTER TABLE clan_applications ADD COLUMN reviewed_by BIGINT"))
+                            if "reason" not in app_cols:
+                                logger.info("Adding missing column reason to clan_applications...")
+                                connection.execute(text("ALTER TABLE clan_applications ADD COLUMN reason TEXT"))
                         
                 await conn.run_sync(check_and_add_columns)
                 
@@ -404,10 +424,59 @@ async def on_member_update(before: discord.Member, after: discord.Member) -> Non
     if after.id == bot.user.id:
         return
         
-    # Check if the role differences are relevant to clans
+    # Check if the role differences are relevant
     role_diff = set(before.roles) ^ set(after.roles)
     if not role_diff:
         return
+        
+    # 1. Onboarding check: Role added that matches a clan onboarding mapping
+    added_roles = [r for r in after.roles if r not in before.roles]
+    if added_roles:
+        async with get_db_session() as session:
+            from bot.models.clan import ClanOnboarding
+            from sqlalchemy.future import select
+            
+            # Find onboarding mappings for this guild
+            mappings_res = await session.execute(
+                select(ClanOnboarding).filter_by(guild_id=after.guild.id, enabled=True)
+            )
+            mappings = list(mappings_res.scalars())
+            
+            for role in added_roles:
+                mapping = next((m for m in mappings if m.discord_role_id == role.id), None)
+                if mapping:
+                    # Strip role immediately
+                    try:
+                        await after.remove_roles(role, reason="Journey Onboarding Trigger: Strip applicant selection.")
+                    except discord.Forbidden:
+                        pass
+                        
+                    # Submit application
+                    from bot.cogs.clans import validate_and_submit_application
+                    success, error_msg = await validate_and_submit_application(
+                        session, after.guild, after.id, mapping.clan_id, "onboarding"
+                    )
+                    
+                    try:
+                        if not success:
+                            embed = discord.Embed(
+                                title="❌ Clan Application Error",
+                                description=f"The bot could not submit your onboarding application: {error_msg}",
+                                color=discord.Color.red()
+                            )
+                            await after.send(embed=embed)
+                        else:
+                            embed = discord.Embed(
+                                title="✅ Onboarding Application Submitted",
+                                description="Your onboarding selection has registered a pending application. Officers have been notified!",
+                                color=discord.Color.green()
+                            )
+                            await after.send(embed=embed)
+                    except Exception:
+                        pass
+                        
+                    # End flow for onboarding since it was triggered
+                    return
         
     from sqlalchemy.orm import selectinload
     async with get_db_session() as session:

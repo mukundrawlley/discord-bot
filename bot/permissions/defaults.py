@@ -24,6 +24,9 @@ PERMISSIONS_REGISTRY = {
     "can_view_logs": {"leader": True, "default": False},
     "can_transfer_leadership": {"leader": True, "default": False},
     "can_delete_clan": {"leader": True, "default": False},
+    "can_review_applications": {"leader": True, "default": False},
+    "can_bulk_accept": {"leader": True, "default": False},
+    "can_bulk_reject": {"leader": True, "default": False},
 }
 
 def get_default_permission_values(is_leader: bool = False) -> dict[str, bool]:

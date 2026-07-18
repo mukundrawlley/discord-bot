@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import io
 from sqlalchemy.future import select
 from sqlalchemy import delete, update
@@ -17,7 +17,8 @@ from bot.models.clan import (
     ClanAuditLog,
     ClanApplication,
     ClanInvite,
-    ClanSettings
+    ClanSettings,
+    ClanOnboarding
 )
 from bot.services.database_service import DatabaseService
 
@@ -540,73 +541,323 @@ class PermissionsToggleView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
+async def fetch_usernames(client: discord.Client, user_ids: list[int]) -> dict[int, str]:
+    """Resolves usernames concurrently for pending application drop-downs."""
+    names = {}
+    for uid in user_ids:
+        user = client.get_user(uid)
+        if not user:
+            try:
+                user = await client.fetch_user(uid)
+            except Exception:
+                pass
+        names[uid] = user.display_name if user else f"User {uid}"
+    return names
+
+async def validate_and_submit_application(
+    session: AsyncSession,
+    guild: discord.Guild,
+    user_id: int,
+    clan_id: int,
+    source: str
+) -> tuple[bool, str]:
+    """Validates eligibility and creates a pending clan application in the database."""
+    from sqlalchemy import func
+    from bot.models.user import UserGuildStats
+    from bot.models.clan import Clan, ClanMember, ClanRole, ClanApplication, ClanSettings
+
+    # 1. Fetch user stats (User existence check)
+    stats_res = await session.execute(
+        select(UserGuildStats).filter_by(guild_id=guild.id, user_id=user_id)
+    )
+    stats = stats_res.scalar_one_or_none()
+    if not stats:
+        return False, "You do not have leveling stats initialized yet. Speak in the server first."
+        
+    # 2. Fetch clan (Existence check)
+    clan_res = await session.execute(
+        select(Clan).filter_by(id=clan_id)
+    )
+    clan = clan_res.scalar_one_or_none()
+    if not clan or clan.guild_id != guild.id:
+        return False, "The target clan does not exist."
+        
+    # 3. Check approved
+    if not clan.approved:
+        return False, "This clan is pending Staff Approval and cannot accept applications."
+        
+    # 4. Check settings (Applications enabled)
+    clan_settings_res = await session.execute(
+        select(ClanSettings).filter_by(clan_id=clan.id)
+    )
+    clan_settings = clan_settings_res.scalar_one_or_none()
+    if not clan_settings or clan_settings.join_type != "apply":
+        return False, "This clan has disabled applications (invite only or open)."
+        
+    # 5. Check if user already in a clan
+    existing_member_res = await session.execute(
+        select(ClanMember).filter_by(guild_id=guild.id, user_id=user_id)
+    )
+    existing_member = existing_member_res.scalar_one_or_none()
+    if existing_member:
+        return False, "You are already in a clan."
+        
+    # 6. Check pending applications
+    pending_res = await session.execute(
+        select(ClanApplication).filter_by(clan_id=clan.id, user_id=user_id, status="pending")
+    )
+    pending = pending_res.scalars().first()
+    if pending:
+        return False, "You already have a pending application for this clan."
+        
+    # 7. Check clan member limit (Clan not full)
+    members_count_res = await session.execute(
+        select(func.count(ClanMember.user_id)).filter_by(clan_id=clan.id)
+    )
+    members_count = members_count_res.scalar() or 0
+    if members_count >= 50:
+        return False, "This clan is currently full (maximum 50 members)."
+        
+    # Create application
+    app = ClanApplication(
+        guild_id=guild.id,
+        clan_id=clan.id,
+        user_id=user_id,
+        status="pending",
+        application_source=source
+    )
+    session.add(app)
+    await session.flush()
+    
+    # Audit log
+    await write_audit_log(
+        session,
+        clan.id,
+        user_id,
+        "application_created",
+        None,
+        f"Source: {source}, App ID: {app.id}"
+    )
+    
+    # Send Notification to clan officers & leader
+    try:
+        owner = guild.get_member(clan.owner_id)
+        pending_count_res = await session.execute(
+            select(func.count(ClanApplication.id)).filter_by(clan_id=clan.id, status="pending")
+        )
+        pending_count = pending_count_res.scalar() or 0
+        
+        if owner:
+            embed = discord.Embed(
+                title="🔔 New Clan Application",
+                description=f"**<@{user_id}>** applied to your clan **{clan.name}**!",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Application Source", value=source.capitalize(), inline=True)
+            embed.add_field(name="Pending Applications", value=str(pending_count), inline=True)
+            try:
+                await owner.send(embed=embed)
+            except discord.Forbidden:
+                pass
+    except Exception as e:
+        logger.warning(f"Failed to send application notification: {e}")
+        
+    return True, "Application submitted successfully."
+
+class ApplicationSelect(discord.ui.Select):
+    def __init__(self, applications: list[ClanApplication], user_names: dict[int, str]):
+        options = []
+        for app in applications[:25]:
+            username = user_names.get(app.user_id, f"User {app.user_id}")
+            options.append(discord.SelectOption(
+                label=username,
+                value=str(app.id),
+                description=f"Source: {app.application_source} | Applied At: {app.created_at.strftime('%Y-%m-%d')}"
+            ))
+        super().__init__(placeholder="Select an application to inspect...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: "ApplicationsView" = self.view
+        selected_id = int(self.values[0])
+        view.selected_app_idx = next(i for i, app in enumerate(view.applications) if app.id == selected_id)
+        embed = await view.get_current_app_embed(interaction)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class RejectReasonModal(discord.ui.Modal, title="Rejection Reason"):
+    reason = discord.ui.TextInput(
+        label="Optional Reason",
+        placeholder="Enter a reason for the rejection...",
+        required=False,
+        max_length=200
+    )
+
+    def __init__(self, view: "ApplicationsView", app_id: int):
+        super().__init__()
+        self.view = view
+        self.app_id = app_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        app = next((a for a in self.view.applications if a.id == self.app_id), None)
+        if not app:
+            await interaction.followup.send("❌ That application is no longer pending.", ephemeral=True)
+            return
+            
+        reason_text = self.reason.value or "No reason specified"
+        async with get_db_session() as session:
+            await session.execute(
+                update(ClanApplication)
+                .filter_by(id=app.id)
+                .values(status="rejected", reviewed_at=datetime.utcnow(), reviewed_by=interaction.user.id, reason=reason_text)
+            )
+            await write_audit_log(
+                session,
+                self.view.clan_id,
+                interaction.user.id,
+                "application_rejected",
+                f"User: {app.user_id}",
+                f"Reason: {reason_text}"
+            )
+            await session.commit()
+            
+            try:
+                applicant = interaction.guild.get_member(app.user_id) or await interaction.client.fetch_user(app.user_id)
+                if applicant:
+                    embed = discord.Embed(
+                        title="❌ Clan Application Status",
+                        description=f"Your application to join **{interaction.guild.name}**'s clan has been rejected.",
+                        color=discord.Color.red()
+                    )
+                    embed.add_field(name="Reason", value=reason_text, inline=False)
+                    await applicant.send(embed=embed)
+            except Exception:
+                pass
+                
+        self.view.applications = [a for a in self.view.applications if a.id != self.app_id]
+        if self.view.selected_app_idx >= len(self.view.applications):
+            self.view.selected_app_idx = max(0, len(self.view.applications) - 1)
+            
+        self.view.refresh_dropdown_options()
+        embed = await self.view.get_current_app_embed(interaction)
+        await interaction.message.edit(embed=embed, view=self.view)
+        await interaction.followup.send("✅ Application rejected successfully.", ephemeral=True)
+
 class ApplicationsView(discord.ui.View):
-    def __init__(self, clan_id: int, applications: list[ClanApplication], manager_id: int):
-        super().__init__(timeout=120)
+    def __init__(self, clan_id: int, applications: list[ClanApplication], manager_id: int, user_names: dict[int, str]):
+        super().__init__(timeout=180)
         self.clan_id = clan_id
         self.applications = applications
         self.manager_id = manager_id
-        self.index = 0
-        self.update_view()
+        self.user_names = user_names
+        self.selected_app_idx = 0
+        self.refresh_dropdown_options()
 
-    def update_view(self):
+    def refresh_dropdown_options(self):
         self.clear_items()
-        
         if not self.applications:
             return
             
-        accept_btn = discord.ui.Button(label="Accept", style=discord.ButtonStyle.success, custom_id="app_accept")
+        self.add_item(ApplicationSelect(self.applications, self.user_names))
+        
+        accept_btn = discord.ui.Button(label="Accept", style=discord.ButtonStyle.success, row=1)
         accept_btn.callback = self.accept_callback
         self.add_item(accept_btn)
         
-        reject_btn = discord.ui.Button(label="Reject", style=discord.ButtonStyle.danger, custom_id="app_reject")
+        reject_btn = discord.ui.Button(label="Reject", style=discord.ButtonStyle.danger, row=1)
         reject_btn.callback = self.reject_callback
         self.add_item(reject_btn)
+        
+        profile_btn = discord.ui.Button(label="View Profile", style=discord.ButtonStyle.secondary, row=1)
+        profile_btn.callback = self.profile_callback
+        self.add_item(profile_btn)
+        
+        bulk_accept_btn = discord.ui.Button(label="Accept All", style=discord.ButtonStyle.success, row=2)
+        bulk_accept_btn.callback = self.bulk_accept_callback
+        self.add_item(bulk_accept_btn)
+        
+        bulk_reject_btn = discord.ui.Button(label="Reject All", style=discord.ButtonStyle.danger, row=2)
+        bulk_reject_btn.callback = self.bulk_reject_callback
+        self.add_item(bulk_reject_btn)
+        
+        refresh_btn = discord.ui.Button(label="Refresh", style=discord.ButtonStyle.primary, row=2)
+        refresh_btn.callback = self.refresh_callback
+        self.add_item(refresh_btn)
 
     async def get_current_app_embed(self, interaction: discord.Interaction) -> discord.Embed:
-        if self.index >= len(self.applications):
-            return discord.Embed(title="📋 Applications Queue", description="No pending applications.", color=discord.Color.blue())
+        if not self.applications or self.selected_app_idx >= len(self.applications):
+            return discord.Embed(
+                title="📋 Pending Applications Queue",
+                description="*No pending applications.*",
+                color=discord.Color.blue()
+            )
             
-        app = self.applications[self.index]
-        user = await interaction.client.fetch_user(app.user_id)
+        app = self.applications[self.selected_app_idx]
+        user = interaction.guild.get_member(app.user_id)
+        if not user:
+            try:
+                user = await interaction.client.fetch_user(app.user_id)
+            except Exception:
+                pass
+                
+        username = user.display_name if user else f"User {app.user_id}"
         
         embed = discord.Embed(
-            title="📋 Applications Queue",
-            description=f"Application **{self.index+1} / {len(self.applications)}**",
+            title="📋 Pending Applications Queue",
+            description=f"Inspecting application **{self.selected_app_idx + 1} / {len(self.applications)}**",
             color=discord.Color.blue()
         )
-        embed.add_field(name="User", value=f"{user.mention} ({user.display_name})", inline=False)
-        embed.add_field(name="User ID", value=app.user_id, inline=True)
-        embed.add_field(name="Applied At", value=app.created_at.strftime("%Y-%m-%d"), inline=True)
         
+        embed.add_field(name="Username", value=username, inline=True)
+        embed.add_field(name="User ID", value=str(app.user_id), inline=True)
+        embed.add_field(name="Application Source", value=app.application_source.capitalize(), inline=True)
+        embed.add_field(name="Applied At", value=app.created_at.strftime("%Y-%m-%d %H:%M UTC"), inline=True)
+        embed.add_field(name="Current Clan", value="None", inline=True)
+        
+        if user and isinstance(user, discord.Member):
+            joined_server_days = (datetime.now(timezone.utc) - user.joined_at).days
+            embed.add_field(name="Joined Server", value=f"{joined_server_days} days ago", inline=True)
+            acct_age_days = (datetime.now(timezone.utc) - user.created_at).days
+            embed.add_field(name="Account Age", value=f"{acct_age_days} days ago", inline=True)
+        else:
+            embed.add_field(name="Joined Server", value="Not in server", inline=True)
+            embed.add_field(name="Account Age", value="Unknown", inline=True)
+            
         return embed
 
     async def accept_callback(self, interaction: discord.Interaction):
-        app = self.applications[self.index]
+        if not self.applications or self.selected_app_idx >= len(self.applications):
+            await interaction.response.send_message("❌ No application is currently selected.", ephemeral=True)
+            return
+            
+        app = self.applications[self.selected_app_idx]
+        await interaction.response.defer(ephemeral=True)
+        
         async with get_db_session() as session:
-            # Verify target not already in a clan
-            existing = await get_member_membership(session, interaction.guild_id, app.user_id)
-            if existing:
-                await interaction.response.send_message("❌ This user has already joined a clan.", ephemeral=True)
+            from sqlalchemy import func
+            member = interaction.guild.get_member(app.user_id)
+            if not member:
+                await interaction.followup.send("❌ Target member is no longer in the server.", ephemeral=True)
                 return
                 
-            # Fetch recruit/lowest role
+            existing = await get_member_membership(session, interaction.guild_id, app.user_id)
+            if existing:
+                await interaction.followup.send("❌ This user has already joined a clan.", ephemeral=True)
+                return
+                
+            members_count_res = await session.execute(
+                select(func.count(ClanMember.user_id)).filter_by(clan_id=self.clan_id)
+            )
+            members_count = members_count_res.scalar() or 0
+            if members_count >= 50:
+                await interaction.followup.send("❌ The clan has reached its maximum size of 50 members.", ephemeral=True)
+                return
+                
             roles_result = await session.execute(
                 select(ClanRole).filter_by(clan_id=self.clan_id).order_by(ClanRole.hierarchy_level.asc())
             )
             roles = list(roles_result.scalars())
             recruit_role = roles[0] if roles else None
             
-            # Check limits
-            if recruit_role and recruit_role.max_members is not None:
-                members_count = await session.execute(
-                    select(ClanMember).filter_by(clan_id=self.clan_id, role_id=recruit_role.id)
-                )
-                if len(list(members_count.scalars())) >= recruit_role.max_members:
-                    await interaction.response.send_message("❌ The entry rank has reached its member limit.", ephemeral=True)
-                    return
-                    
-            # Add to clan
             membership = ClanMember(
                 guild_id=interaction.guild_id,
                 user_id=app.user_id,
@@ -615,47 +866,193 @@ class ApplicationsView(discord.ui.View):
             )
             session.add(membership)
             
-            # Update app status
             await session.execute(
-                update(ClanApplication).filter_by(id=app.id).values(status="approved")
+                update(ClanApplication)
+                .filter_by(id=app.id)
+                .values(status="approved", reviewed_at=datetime.utcnow(), reviewed_by=interaction.user.id)
             )
             
-            # Log action
             await write_audit_log(session, self.clan_id, interaction.user.id, "application_accepted", f"User: {app.user_id}")
             await session.commit()
             
-            # Sync roles
             if recruit_role:
                 await sync_discord_roles(interaction.guild, app.user_id, recruit_role.id, roles)
-
-        await interaction.response.send_message("✅ Application accepted!", ephemeral=True)
-        self.applications.pop(self.index)
-        
-        if self.index >= len(self.applications):
-            self.index = 0
+                
+            try:
+                embed = discord.Embed(
+                    title="🎉 Clan Application Status",
+                    description=f"Your application to join **{interaction.guild.name}**'s clan has been approved!",
+                    color=discord.Color.green()
+                )
+                await member.send(embed=embed)
+            except Exception:
+                pass
+                
+        self.applications.pop(self.selected_app_idx)
+        if self.selected_app_idx >= len(self.applications):
+            self.selected_app_idx = max(0, len(self.applications) - 1)
             
-        self.update_view()
+        await self.refresh_dropdown_options()
         embed = await self.get_current_app_embed(interaction)
         await interaction.message.edit(embed=embed, view=self)
+        await interaction.followup.send("✅ Application approved successfully.", ephemeral=True)
 
     async def reject_callback(self, interaction: discord.Interaction):
-        app = self.applications[self.index]
+        if not self.applications or self.selected_app_idx >= len(self.applications):
+            await interaction.response.send_message("❌ No application is currently selected.", ephemeral=True)
+            return
+            
+        app = self.applications[self.selected_app_idx]
+        modal = RejectReasonModal(self, app.id)
+        await interaction.response.send_modal(modal)
+
+    async def profile_callback(self, interaction: discord.Interaction):
+        if not self.applications or self.selected_app_idx >= len(self.applications):
+            await interaction.response.send_message("❌ No application is currently selected.", ephemeral=True)
+            return
+            
+        app = self.applications[self.selected_app_idx]
+        await interaction.response.defer(ephemeral=True)
         async with get_db_session() as session:
-            await session.execute(
-                update(ClanApplication).filter_by(id=app.id).values(status="rejected")
+            from bot.models.user import UserGuildStats
+            stats = await DatabaseService.get_or_create_stats(session, interaction.guild_id, app.user_id)
+            msg = (
+                f"👤 **Player Profile Summary** (ID: `{app.user_id}`):\n"
+                f"🌟 **Level:** {stats.level} | **Total XP:** {stats.xp:,}\n"
+                f"🗺️ **Master Path ID:** {stats.master_path_id or 'None'}\n"
+                f"📅 **Registered At:** {stats.created_at.strftime('%Y-%m-%d')}"
             )
-            await write_audit_log(session, self.clan_id, interaction.user.id, "application_rejected", f"User: {app.user_id}")
+        await interaction.followup.send(msg, ephemeral=True)
+
+    async def bulk_accept_callback(self, interaction: discord.Interaction):
+        if not self.applications:
+            await interaction.response.send_message("❌ No pending applications in the queue.", ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=True)
+        accepted = 0
+        skipped = 0
+        failed = 0
+        
+        async with get_db_session() as session:
+            from sqlalchemy import func
+            roles_result = await session.execute(
+                select(ClanRole).filter_by(clan_id=self.clan_id).order_by(ClanRole.hierarchy_level.asc())
+            )
+            roles = list(roles_result.scalars())
+            recruit_role = roles[0] if roles else None
+            
+            for app in list(self.applications):
+                member = interaction.guild.get_member(app.user_id)
+                if not member:
+                    skipped += 1
+                    continue
+                    
+                existing = await get_member_membership(session, interaction.guild_id, app.user_id)
+                if existing:
+                    skipped += 1
+                    continue
+                    
+                members_count_res = await session.execute(
+                    select(func.count(ClanMember.user_id)).filter_by(clan_id=self.clan_id)
+                )
+                members_count = members_count_res.scalar() or 0
+                if members_count >= 50:
+                    failed += 1
+                    continue
+                    
+                membership = ClanMember(
+                    guild_id=interaction.guild_id,
+                    user_id=app.user_id,
+                    clan_id=self.clan_id,
+                    role_id=recruit_role.id if recruit_role else None
+                )
+                session.add(membership)
+                
+                await session.execute(
+                    update(ClanApplication)
+                    .filter_by(id=app.id)
+                    .values(status="approved", reviewed_at=datetime.utcnow(), reviewed_by=interaction.user.id)
+                )
+                
+                await write_audit_log(session, self.clan_id, interaction.user.id, "application_accepted", f"User: {app.user_id}")
+                
+                if recruit_role:
+                    try:
+                        await sync_discord_roles(interaction.guild, app.user_id, recruit_role.id, roles)
+                    except Exception:
+                        pass
+                accepted += 1
+                
             await session.commit()
             
-        await interaction.response.send_message("❌ Application rejected.", ephemeral=True)
-        self.applications.pop(self.index)
-        
-        if self.index >= len(self.applications):
-            self.index = 0
-            
-        self.update_view()
+        self.applications = []
+        self.selected_app_idx = 0
+        await self.refresh_dropdown_options()
         embed = await self.get_current_app_embed(interaction)
         await interaction.message.edit(embed=embed, view=self)
+        
+        summary = (
+            f"✅ **Bulk Approval Complete!**\n"
+            f"👍 **Accepted:** {accepted}\n"
+            f"⏭️ **Skipped:** {skipped}\n"
+            f"⚠️ **Failed:** {failed}"
+        )
+        await interaction.followup.send(summary, ephemeral=True)
+
+    async def bulk_reject_callback(self, interaction: discord.Interaction):
+        if not self.applications:
+            await interaction.response.send_message("❌ No pending applications in the queue.", ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=True)
+        rejected = 0
+        skipped = 0
+        
+        async with get_db_session() as session:
+            for app in list(self.applications):
+                await session.execute(
+                    update(ClanApplication)
+                    .filter_by(id=app.id)
+                    .values(status="rejected", reviewed_at=datetime.utcnow(), reviewed_by=interaction.user.id, reason="Bulk rejected by officer")
+                )
+                await write_audit_log(session, self.clan_id, interaction.user.id, "application_rejected", f"User: {app.user_id}", "Bulk rejected")
+                rejected += 1
+                
+            await session.commit()
+            
+        self.applications = []
+        self.selected_app_idx = 0
+        await self.refresh_dropdown_options()
+        embed = await self.get_current_app_embed(interaction)
+        await interaction.message.edit(embed=embed, view=self)
+        
+        summary = (
+            f"❌ **Bulk Rejection Complete!**\n"
+            f"👎 **Rejected:** {rejected}\n"
+            f"⏭️ **Skipped:** {skipped}"
+        )
+        await interaction.followup.send(summary, ephemeral=True)
+
+    async def refresh_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        async with get_db_session() as session:
+            apps_result = await session.execute(
+                select(ClanApplication)
+                .filter_by(clan_id=self.clan_id, status="pending")
+                .filter(ClanApplication.created_at >= cutoff)
+                .order_by(ClanApplication.created_at.asc())
+            )
+            self.applications = list(apps_result.scalars())
+            user_ids = [app.user_id for app in self.applications]
+            self.user_names = await fetch_usernames(interaction.client, user_ids)
+            
+        self.selected_app_idx = 0
+        await self.refresh_dropdown_options()
+        embed = await self.get_current_app_embed(interaction)
+        await interaction.message.edit(embed=embed, view=self)
+        await interaction.followup.send("🔄 Applications queue refreshed.", ephemeral=True)
 
 
 class AuditLogsView(discord.ui.View):
@@ -729,6 +1126,7 @@ class AuditLogsView(discord.ui.View):
 class ClanGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="clan", description="MMORPG Dynamic Clan Hierarchy Systems.")
+        self.add_command(self.onboarding_group)
 
     @app_commands.command(name="create", description="Creates a new clan (requires Staff approval).")
     @app_commands.describe(
@@ -873,6 +1271,12 @@ class ClanGroup(app_commands.Group):
             clan.approved = True
             clan.approved_by = interaction.user.id
             clan.approved_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            
+            # Enable applications
+            from bot.models.clan import ClanSettings
+            clan_settings = await session.get(ClanSettings, clan.id)
+            if clan_settings:
+                clan_settings.join_type = "apply"
             
             # Log action
             await write_audit_log(session, clan.id, interaction.user.id, "clan_approved")
@@ -1183,7 +1587,7 @@ class ClanGroup(app_commands.Group):
             view=view
         )
 
-    @app_commands.command(name="apply", description="Applies to join an invite-only clan.")
+    @app_commands.command(name="apply", description="Applies to join an approved clan.")
     @app_commands.describe(clan_name="The name of the clan to apply to.")
     async def clan_apply(self, interaction: discord.Interaction, clan_name: str) -> None:
         """Submits a membership application to a clan."""
@@ -1191,35 +1595,28 @@ class ClanGroup(app_commands.Group):
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
         async with get_db_session() as session:
-            # Verify not in a clan
-            existing = await get_member_membership(session, guild_id, interaction.user.id)
-            if existing:
-                await interaction.response.send_message("❌ You are already in a clan.", ephemeral=True)
-                return
-                
             # Fetch clan
             clan_result = await session.execute(
                 select(Clan).filter_by(guild_id=guild_id).filter(Clan.name.ilike(clan_name))
             )
             clan = clan_result.scalar_one_or_none()
             if not clan:
-                await interaction.response.send_message(f"❌ Clan '{clan_name}' not found.", ephemeral=True)
-                return
-            if not clan.approved:
-                await interaction.response.send_message("❌ This clan is pending Staff Approval and cannot accept applications yet.", ephemeral=True)
+                await interaction.followup.send(f"❌ Clan '{clan_name}' not found.", ephemeral=True)
                 return
                 
-            # Create application
-            app = ClanApplication(
-                clan_id=clan.id,
-                user_id=interaction.user.id
+            success, error_msg = await validate_and_submit_application(
+                session, interaction.guild, interaction.user.id, clan.id, "manual"
             )
-            session.add(app)
+            if not success:
+                await interaction.followup.send(f"❌ {error_msg}", ephemeral=True)
+                return
+                
             await session.commit()
             
-        await interaction.response.send_message(f"✅ Your application to join **{clan.name}** has been submitted!")
+        await interaction.followup.send(f"✅ Your application to join **{clan.name}** has been submitted successfully!", ephemeral=True)
 
     @app_commands.command(name="applications", description="View and manage pending applications (Officers with permission only).")
     async def clan_applications(self, interaction: discord.Interaction) -> None:
@@ -1228,38 +1625,210 @@ class ClanGroup(app_commands.Group):
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
             return
             
+        await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
         async with get_db_session() as session:
             exec_member = await get_member_membership(session, guild_id, interaction.user.id)
             if not exec_member:
-                await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
+                await interaction.followup.send("❌ You are not in a clan.", ephemeral=True)
                 return
             if not exec_member.clan.approved:
-                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
+                await interaction.followup.send("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
                 return
                 
             is_leader = exec_member.clan.owner_id == interaction.user.id
-            can_accept = exec_member.role.permissions.can_accept_applications if (exec_member.role and exec_member.role.permissions) else False
+            can_review = exec_member.role.permissions.can_review_applications if (exec_member.role and exec_member.role.permissions) else False
             
-            if not is_leader and not can_accept:
-                await interaction.response.send_message("❌ You lack permission to manage applications.", ephemeral=True)
+            if not is_leader and not can_review:
+                await interaction.followup.send("❌ You lack permission to manage applications.", ephemeral=True)
                 return
                 
             # Fetch pending applications
+            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
             apps_result = await session.execute(
-                select(ClanApplication).filter_by(clan_id=exec_member.clan_id, status="pending").order_by(ClanApplication.created_at.asc())
+                select(ClanApplication)
+                .filter_by(clan_id=exec_member.clan_id, status="pending")
+                .filter(ClanApplication.created_at >= cutoff.replace(tzinfo=None))
+                .order_by(ClanApplication.created_at.asc())
             )
             applications = list(apps_result.scalars())
-            
             clan_id = exec_member.clan_id
 
         if not applications:
-            await interaction.response.send_message("📋 There are no pending applications for your clan.", ephemeral=True)
+            await interaction.followup.send("📋 There are no pending applications for your clan.", ephemeral=True)
             return
             
-        view = ApplicationsView(clan_id, applications, interaction.user.id)
+        user_ids = [app.user_id for app in applications]
+        user_names = await fetch_usernames(interaction.client, user_ids)
+        
+        view = ApplicationsView(clan_id, applications, interaction.user.id, user_names)
         embed = await view.get_current_app_embed(interaction)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    # ==============================================================================
+    # ONBOARDING SETUP COMMANDS GROUP
+    # ==============================================================================
+    onboarding_group = app_commands.Group(name="onboarding", description="Administrators only: manages Discord Server Onboarding integration.")
+
+    @onboarding_group.command(name="setup", description="Sets up onboarding roles and mapping configurations.")
+    @app_commands.default_permissions(administrator=True)
+    async def onboarding_setup(self, interaction: discord.Interaction) -> None:
+        """Sets up onboarding roles and configuration."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild_id
+        async with get_db_session() as session:
+            # Find approved clans
+            clans_res = await session.execute(
+                select(Clan).filter_by(guild_id=guild_id, approved=True)
+            )
+            clans = list(clans_res.scalars())
+            if not clans:
+                await interaction.followup.send("❌ No approved clans found. Please approve clans first.", ephemeral=True)
+                return
+                
+            mapped_count = 0
+            for idx, clan in enumerate(clans):
+                # Check mapping
+                mapping_res = await session.execute(
+                    select(ClanOnboarding).filter_by(guild_id=guild_id, clan_id=clan.id)
+                )
+                mapping = mapping_res.scalar_one_or_none()
+                
+                if not mapping:
+                    role_name = f"{clan.name} Applicant"
+                    # Try to find existing role in guild to avoid duplicates
+                    role = discord.utils.get(interaction.guild.roles, name=role_name)
+                    if not role:
+                        try:
+                            role = await interaction.guild.create_role(
+                                name=role_name,
+                                color=discord.Color.light_grey(),
+                                reason=f"Journey Clan Onboarding Setup: Applicant trigger role."
+                            )
+                        except discord.Forbidden:
+                            await interaction.followup.send("❌ Journey Bot lacks 'Manage Roles' permission to create onboarding applicant roles.", ephemeral=True)
+                            return
+                            
+                    mapping = ClanOnboarding(
+                        guild_id=guild_id,
+                        clan_id=clan.id,
+                        discord_role_id=role.id,
+                        display_order=idx,
+                        enabled=True
+                    )
+                    session.add(mapping)
+                    mapped_count += 1
+                else:
+                    role = interaction.guild.get_role(mapping.discord_role_id)
+                    if not role:
+                        role_name = f"{clan.name} Applicant"
+                        role = discord.utils.get(interaction.guild.roles, name=role_name)
+                        if not role:
+                            try:
+                                role = await interaction.guild.create_role(
+                                    name=role_name,
+                                    color=discord.Color.light_grey(),
+                                    reason=f"Journey Clan Onboarding Setup: Applicant trigger role."
+                                )
+                            except discord.Forbidden:
+                                await interaction.followup.send("❌ Journey Bot lacks 'Manage Roles' permission to create onboarding applicant roles.", ephemeral=True)
+                                return
+                        mapping.discord_role_id = role.id
+                    mapping.enabled = True
+                    
+            await session.commit()
+            
+        msg = (
+            f"✅ **Onboarding Integration Configured!**\n"
+            f"Setup/Synced applicant trigger roles for approved clans.\n\n"
+            f"📋 **Next Steps for Server Admins:**\n"
+            f"1. Go to **Server Settings** -> **Onboarding** -> **Questions**.\n"
+            f"2. Add a question: *'What clan would you like to apply to?'*\n"
+            f"3. For each option, link it to the respective **Applicant** role created by the bot:\n"
+            + "\n".join([f"   - **Choice:** `{c.name}` ➡️ **Role:** `{c.name} Applicant`" for c in clans]) +
+            f"\n   - **Choice:** `No Clan` ➡️ (No role linked)\n"
+            f"4. The bot will automatically listen to onboarding selections and create pending applications!"
+        )
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @onboarding_group.command(name="refresh", description="Refreshes onboarding roles mapping for newly approved clans.")
+    @app_commands.default_permissions(administrator=True)
+    async def onboarding_refresh(self, interaction: discord.Interaction) -> None:
+        """Alias to onboarding setup to sync mappings."""
+        await self.onboarding_setup.callback(self, interaction)
+
+    @onboarding_group.command(name="disable", description="Disables onboarding integration mapping.")
+    @app_commands.default_permissions(administrator=True)
+    async def onboarding_disable(self, interaction: discord.Interaction) -> None:
+        """Disables the onboarding trigger mappings."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild_id
+        async with get_db_session() as session:
+            await session.execute(
+                update(ClanOnboarding).filter_by(guild_id=guild_id).values(enabled=False)
+            )
+            await session.commit()
+        await interaction.followup.send("✅ Onboarding integration has been disabled. User selections will no longer trigger applications.", ephemeral=True)
+
+    @onboarding_group.command(name="status", description="Displays status of onboarding roles mapping configuration.")
+    @app_commands.default_permissions(administrator=True)
+    async def onboarding_status(self, interaction: discord.Interaction) -> None:
+        """Displays mapped roles status."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+            
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild_id
+        async with get_db_session() as session:
+            mappings_res = await session.execute(
+                select(ClanOnboarding).filter_by(guild_id=guild_id)
+            )
+            mappings = list(mappings_res.scalars())
+            
+            clans_res = await session.execute(
+                select(Clan).filter_by(guild_id=guild_id, approved=True)
+            )
+            clans = list(clans_res.scalars())
+            
+        if not mappings:
+            await interaction.followup.send("ℹ️ Onboarding integration is not set up yet. Run `/clan onboarding setup` to configure.", ephemeral=True)
+            return
+            
+        enabled = any(m.enabled for m in mappings)
+        linked = 0
+        missing = 0
+        mapping_details = []
+        for m in mappings:
+            clan = next((c for c in clans if c.id == m.clan_id), None)
+            clan_name = clan.name if clan else f"Unknown Clan (ID: {m.clan_id})"
+            role = interaction.guild.get_role(m.discord_role_id)
+            if role:
+                linked += 1
+                role_status = f"✅ `{role.name}`"
+            else:
+                missing += 1
+                role_status = "❌ Missing Discord Role"
+                
+            mapping_details.append(f"- **{clan_name}**: {role_status} (Order: {m.display_order})")
+            
+        msg = (
+            f"📊 **Onboarding Integration Status**\n"
+            f"**Enabled:** {'🟢 Yes' if enabled else '🔴 No'}\n"
+            f"**Approved Clans:** {len(clans)}\n"
+            f"**Linked Mapping Roles:** {linked}\n"
+            f"**Missing Discord Roles:** {missing}\n\n"
+            f"📋 **Mappings:**\n" + "\n".join(mapping_details)
+        )
+        await interaction.followup.send(msg, ephemeral=True)
 
     @app_commands.command(name="logs", description="Views the clan's audit log history.")
     async def clan_logs(self, interaction: discord.Interaction) -> None:

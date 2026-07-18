@@ -11,7 +11,8 @@ from bot.models.clan import (
     ClanAuditLog,
     ClanApplication,
     ClanInvite,
-    ClanSettings
+    ClanSettings,
+    ClanOnboarding
 )
 
 __all__ = [
@@ -30,5 +31,6 @@ __all__ = [
     "ClanAuditLog",
     "ClanApplication",
     "ClanInvite",
-    "ClanSettings"
+    "ClanSettings",
+    "ClanOnboarding"
 ]

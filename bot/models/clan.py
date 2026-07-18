@@ -45,6 +45,7 @@ class Clan(Base):
     applications = relationship("ClanApplication", back_populates="clan", cascade="all, delete-orphan")
     invites = relationship("ClanInvite", back_populates="clan", cascade="all, delete-orphan")
     settings = relationship("ClanSettings", back_populates="clan", uselist=False, cascade="all, delete-orphan")
+    onboarding = relationship("ClanOnboarding", back_populates="clan", cascade="all, delete-orphan")
 
 class ClanMember(Base):
     __tablename__ = "clan_members"
@@ -145,13 +146,18 @@ class ClanApplication(Base):
     __tablename__ = "clan_applications"
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger)
     clan_id: Mapped[int] = mapped_column(Integer, ForeignKey("clans.id", ondelete="CASCADE"))
     user_id: Mapped[int] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(32), default="pending") # "pending", "approved", "rejected"
+    application_source: Mapped[str] = mapped_column(String(32), default="manual", server_default=text("'manual'"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
     )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     
     clan = relationship("Clan", back_populates="applications")
 
@@ -179,3 +185,19 @@ class ClanSettings(Base):
     min_xp: Mapped[int] = mapped_column(Integer, default=0)
     
     clan = relationship("Clan", back_populates="settings")
+
+class ClanOnboarding(Base):
+    __tablename__ = "clan_onboarding"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    guild_id: Mapped[int] = mapped_column(BigInteger)
+    clan_id: Mapped[int] = mapped_column(Integer, ForeignKey("clans.id", ondelete="CASCADE"))
+    discord_role_id: Mapped[int] = mapped_column(BigInteger)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+    )
+    
+    clan = relationship("Clan", back_populates="onboarding")
