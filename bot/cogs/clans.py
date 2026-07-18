@@ -1322,7 +1322,7 @@ class ClanGroup(app_commands.Group):
                     clan_result = await session.execute(
                         select(Clan).filter_by(guild_id=guild_id).filter(Clan.name.ilike(target))
                     )
-                    clan = clan_result.scalar_one_or_none()
+                    clan = clan_result.scalars().first()
                     if not clan:
                         await interaction.response.send_message(f"❌ No clan found with name '{target}'.", ephemeral=True)
                         return
@@ -1341,36 +1341,36 @@ class ClanGroup(app_commands.Group):
             )
             clan_roles = list(roles_result.scalars())
             
-        # Resolve names in parallel to prevent sequential REST bottlenecks
+        # Resolve names using gateway queries to avoid HTTP REST API rate limit bans
         import asyncio
-        async def resolve_name(u_id: int) -> str:
-            if interaction.guild:
-                member_obj = interaction.guild.get_member(u_id)
-                if member_obj:
-                    return member_obj.display_name
-            user_obj = interaction.client.get_user(u_id)
-            if user_obj:
-                return user_obj.display_name
-            try:
-                user_obj = await interaction.client.fetch_user(u_id)
-                return user_obj.display_name
-            except Exception:
-                return f"User {u_id}"
+        leader_name = f"ID: {clan.owner_id}"
+        if interaction.guild:
+            uncached_ids = [uid for uid in [clan.owner_id] + [m.user_id for m in members] if not interaction.guild.get_member(uid)]
+            if uncached_ids:
+                try:
+                    # Gateway lazy-member chunks populates local cache instantly
+                    await asyncio.wait_for(
+                        interaction.guild.query_members(user_ids=uncached_ids, cache=True),
+                        timeout=1.0
+                    )
+                except Exception:
+                    pass
+            
+            leader_member = interaction.guild.get_member(clan.owner_id)
+            if leader_member:
+                leader_name = leader_member.display_name
+        else:
+            leader_user = interaction.client.get_user(clan.owner_id)
+            if leader_user:
+                leader_name = leader_user.display_name
 
-        # Resolve leader name and all member names in parallel
-        user_ids_to_resolve = [clan.owner_id] + [m.user_id for m in members]
-        seen = set()
-        unique_ids = []
-        for uid in user_ids_to_resolve:
-            if uid not in seen:
-                seen.add(uid)
-                unique_ids.append(uid)
-                
-        tasks = [resolve_name(uid) for uid in unique_ids]
-        resolved_results = await asyncio.gather(*tasks)
-        name_map = dict(zip(unique_ids, resolved_results))
-        
-        leader_name = name_map.get(clan.owner_id, f"ID: {clan.owner_id}")
+        # Fallback to single HTTP fetch for leader only if still uncached
+        if leader_name.startswith("ID:") and interaction.client:
+            try:
+                leader_user = await interaction.client.fetch_user(clan.owner_id)
+                leader_name = leader_user.display_name
+            except Exception:
+                pass
 
         embed = discord.Embed(
             title=f"🛡️ Clan: {clan.name} " + ("" if clan.approved else "(Pending Approval ⏳)"),
@@ -1385,7 +1385,16 @@ class ClanGroup(app_commands.Group):
         
         members_list = []
         for idx, m in enumerate(members):
-            name = name_map.get(m.user_id, f"User {m.user_id}")
+            name = None
+            if interaction.guild:
+                member_obj = interaction.guild.get_member(m.user_id)
+                if member_obj:
+                    name = member_obj.display_name
+            if not name:
+                user_obj = interaction.client.get_user(m.user_id)
+                if user_obj:
+                    name = user_obj.display_name
+            
             role_suffix = ""
             if m.role:
                 if m.role.hierarchy_level == 100:
@@ -1393,7 +1402,10 @@ class ClanGroup(app_commands.Group):
                 else:
                     role_suffix = f" ({m.role.role_name})"
                     
-            members_list.append(f"{idx+1}. <@{m.user_id}> ({name}){role_suffix}")
+            if name:
+                members_list.append(f"{idx+1}. <@{m.user_id}> ({name}){role_suffix}")
+            else:
+                members_list.append(f"{idx+1}. <@{m.user_id}>{role_suffix}")
             
         members_str = "\n".join(members_list) if members_list else "*No members.*"
         embed.add_field(name=f"👥 Members ({len(members)})", value=members_str, inline=False)
