@@ -1343,26 +1343,48 @@ class ClanGroup(app_commands.Group):
             
         # Resolve names using gateway queries to avoid HTTP REST API rate limit bans
         import asyncio
-        leader_name = f"ID: {clan.owner_id}"
+        resolved_members = []
         if interaction.guild:
             uncached_ids = [uid for uid in [clan.owner_id] + [m.user_id for m in members] if not interaction.guild.get_member(uid)]
             if uncached_ids:
                 try:
-                    # Gateway lazy-member chunks populates local cache instantly
-                    await asyncio.wait_for(
+                    # Gateway lazy-member chunks returns the list of Member objects directly
+                    resolved_members = await asyncio.wait_for(
                         interaction.guild.query_members(user_ids=uncached_ids, cache=True),
-                        timeout=1.0
+                        timeout=1.5
                     )
                 except Exception:
                     pass
-            
-            leader_member = interaction.guild.get_member(clan.owner_id)
-            if leader_member:
-                leader_name = leader_member.display_name
-        else:
+
+        # Build a helper map of user IDs to names
+        name_map = {}
+        if interaction.guild:
+            for uid in [clan.owner_id] + [m.user_id for m in members]:
+                m_obj = interaction.guild.get_member(uid)
+                if m_obj:
+                    name_map[uid] = m_obj.display_name
+            # Merge members resolved via gateway query
+            for m_obj in resolved_members:
+                name_map[m_obj.id] = m_obj.display_name
+
+        # If any members are still uncached, fetch them in parallel ONLY if there are 5 or fewer to avoid rate limits
+        uncached_remaining = [uid for uid in [clan.owner_id] + [m.user_id for m in members] if uid not in name_map]
+        if uncached_remaining and len(uncached_remaining) <= 5:
+            async def fetch_and_cache(uid: int):
+                try:
+                    user_obj = await interaction.client.fetch_user(uid)
+                    name_map[uid] = user_obj.display_name
+                except Exception:
+                    pass
+            await asyncio.gather(*[fetch_and_cache(uid) for uid in uncached_remaining])
+
+        leader_name = name_map.get(clan.owner_id)
+        if not leader_name:
             leader_user = interaction.client.get_user(clan.owner_id)
             if leader_user:
                 leader_name = leader_user.display_name
+            else:
+                leader_name = f"ID: {clan.owner_id}"
 
         # Fallback to single HTTP fetch for leader only if still uncached
         if leader_name.startswith("ID:") and interaction.client:
@@ -1385,11 +1407,7 @@ class ClanGroup(app_commands.Group):
         
         members_list = []
         for idx, m in enumerate(members):
-            name = None
-            if interaction.guild:
-                member_obj = interaction.guild.get_member(m.user_id)
-                if member_obj:
-                    name = member_obj.display_name
+            name = name_map.get(m.user_id)
             if not name:
                 user_obj = interaction.client.get_user(m.user_id)
                 if user_obj:
