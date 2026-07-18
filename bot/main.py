@@ -415,14 +415,13 @@ async def sync_commands(ctx: commands.Context):
         
     await ctx.send("⏳ Syncing slash commands...")
     try:
-        # Clear any guild-local commands from this server to resolve duplicate listings
-        bot.tree.clear_commands(guild=ctx.guild)
-        await bot.tree.sync(guild=ctx.guild)
-        await ctx.send("🧹 Cleared duplicate guild-local commands from this server.")
+        # Copy global commands to this server for instant activation
+        bot.tree.copy_global_to(guild=ctx.guild)
+        local_synced = await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(f"✅ Synced {len(local_synced)} commands locally to this server for instant activation!")
         
-        # Synchronize commands globally
-        global_synced = await bot.tree.sync()
-        await ctx.send(f"✅ Global sync complete! Synced {len(global_synced)} commands globally. (Duplicates resolved!)")
+        # Also refresh global registry
+        await bot.tree.sync()
     except Exception as e:
         await ctx.send(f"❌ Failed to sync commands: `{e}`")
         logger.error("Command sync failed", exc_info=e)
