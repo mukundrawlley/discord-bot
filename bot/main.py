@@ -48,7 +48,8 @@ class JourneyBot(commands.Bot):
         super().__init__(
             command_prefix="j!",
             intents=intents,
-            help_command=None
+            help_command=None,
+            allowed_mentions=discord.AllowedMentions(everyone=False, here=False)
         )
         self.scheduler = AsyncIOScheduler()
 
