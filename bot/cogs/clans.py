@@ -900,6 +900,9 @@ class ClanGroup(app_commands.Group):
             if not membership or membership.clan.owner_id != interaction.user.id:
                 await interaction.response.send_message("❌ Only the clan Leader can manage roles.", ephemeral=True)
                 return
+            if not membership.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
+                return
                 
             # Fetch roles
             roles_result = await session.execute(
@@ -928,6 +931,9 @@ class ClanGroup(app_commands.Group):
             membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
             if not membership or membership.clan.owner_id != interaction.user.id:
                 await interaction.response.send_message("❌ Only the clan Leader can configure permissions.", ephemeral=True)
+                return
+            if not membership.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
                 return
                 
             role_result = await session.execute(
@@ -974,6 +980,9 @@ class ClanGroup(app_commands.Group):
             exec_member = await get_member_membership(session, guild_id, interaction.user.id)
             if not exec_member:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
+                return
+            if not exec_member.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
                 return
                 
             is_leader = exec_member.clan.owner_id == interaction.user.id
@@ -1057,6 +1066,9 @@ class ClanGroup(app_commands.Group):
             if not exec_member:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
                 return
+            if not exec_member.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
+                return
                 
             is_leader = exec_member.clan.owner_id == interaction.user.id
             can_demote = exec_member.role.permissions.can_demote if (exec_member.role and exec_member.role.permissions) else False
@@ -1136,7 +1148,9 @@ class ClanGroup(app_commands.Group):
             if not exec_member:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
                 return
-                
+            if not exec_member.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
+                return
             is_leader = exec_member.clan.owner_id == interaction.user.id
             can_invite = exec_member.role.permissions.can_invite if (exec_member.role and exec_member.role.permissions) else False
             
@@ -1193,6 +1207,9 @@ class ClanGroup(app_commands.Group):
             if not clan:
                 await interaction.response.send_message(f"❌ Clan '{clan_name}' not found.", ephemeral=True)
                 return
+            if not clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and cannot accept applications yet.", ephemeral=True)
+                return
                 
             # Create application
             app = ClanApplication(
@@ -1216,6 +1233,9 @@ class ClanGroup(app_commands.Group):
             exec_member = await get_member_membership(session, guild_id, interaction.user.id)
             if not exec_member:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
+                return
+            if not exec_member.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
                 return
                 
             is_leader = exec_member.clan.owner_id == interaction.user.id
@@ -1253,6 +1273,9 @@ class ClanGroup(app_commands.Group):
             exec_member = await get_member_membership(session, guild_id, interaction.user.id)
             if not exec_member:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
+                return
+            if not exec_member.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
                 return
                 
             is_leader = exec_member.clan.owner_id == interaction.user.id
@@ -1447,6 +1470,9 @@ class ClanGroup(app_commands.Group):
             if not membership:
                 await interaction.response.send_message("❌ You are not currently in a clan.", ephemeral=True)
                 return
+            if not membership.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
+                return
 
             clan = membership.clan
             
@@ -1548,6 +1574,9 @@ class ClanGroup(app_commands.Group):
             exec_member = await get_member_membership(session, guild_id, interaction.user.id)
             if not exec_member:
                 await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
+                return
+            if not exec_member.clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
                 return
                 
             is_leader = exec_member.clan.owner_id == interaction.user.id
