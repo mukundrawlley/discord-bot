@@ -367,10 +367,10 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
                     d_color = parse_color(color_val) if color_val else discord.Color.default()
                     target_pos = max(1, interaction.guild.me.top_role.position - 1)
                     try:
-                        await d_role.edit(name=expected_d_name, color=d_color, position=target_pos, reason="Journey Clan Role Modification")
+                        await d_role.edit(name=expected_d_name, color=d_color, position=target_pos, mentionable=True, reason="Journey Clan Role Modification")
                     except Exception:
                         try:
-                            await d_role.edit(name=expected_d_name, color=d_color, reason="Journey Clan Role Modification")
+                            await d_role.edit(name=expected_d_name, color=d_color, mentionable=True, reason="Journey Clan Role Modification")
                         except discord.Forbidden:
                             pass
                         
@@ -2867,12 +2867,13 @@ async def execute_clan_repair(
             d_role = await guild.create_role(
                 name=expected_name,
                 color=role_color,
+                mentionable=True,
                 reason=f"Journey Clan Repair: Created missing role '{r.role_name}'."
             )
             summary["roles_created"] += 1
-        elif d_role.name != expected_name:
+        else:
             try:
-                await d_role.edit(name=expected_name, reason="Journey Clan Repair: Rename role to match exact custom name.")
+                await d_role.edit(name=expected_name, mentionable=True, reason="Journey Clan Repair: Ensure role is mentionable and matches custom name.")
             except discord.Forbidden:
                 pass
 
