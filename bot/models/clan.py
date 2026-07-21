@@ -99,6 +99,7 @@ class ClanRole(Base):
     max_members: Mapped[int | None] = mapped_column(Integer, nullable=True) # None = unlimited
     display_order: Mapped[int] = mapped_column(Integer, default=0)
     is_system_role: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_mentionable: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
     
     created_at: Mapped[datetime] = mapped_column(
         DateTime,

@@ -173,6 +173,9 @@ class JourneyBot(commands.Bot):
                         if "color2" not in clan_roles_cols:
                             logger.info("Adding missing column color2 to clan_roles...")
                             connection.execute(text("ALTER TABLE clan_roles ADD COLUMN color2 VARCHAR(7)"))
+                        if "is_mentionable" not in clan_roles_cols:
+                            logger.info("Adding missing column is_mentionable to clan_roles...")
+                            connection.execute(text("ALTER TABLE clan_roles ADD COLUMN is_mentionable BOOLEAN DEFAULT TRUE"))
                     
                     # Check clan_role_permissions table columns dynamically
                     if "clan_role_permissions" in inspector.get_table_names():

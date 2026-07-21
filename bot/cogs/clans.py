@@ -336,6 +336,7 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
     role_name = discord.ui.TextInput(label="Role Name", placeholder="e.g. Commander", max_length=64)
     color = discord.ui.TextInput(label="Primary Hex Color (Optional)", placeholder="e.g. #FFCC00", required=False, max_length=7)
     color2 = discord.ui.TextInput(label="Secondary Gradient Color (Optional)", placeholder="e.g. #00FF00 (Level 2+ Boost)", required=False, max_length=7)
+    pingable = discord.ui.TextInput(label="Pingable / Mentionable? (True / False)", placeholder="True or False", default="True", required=False, max_length=5)
     limit = discord.ui.TextInput(label="Max Member Limit (Optional)", placeholder="e.g. 5 (0 or leave blank for unlimited)", required=False)
 
     def __init__(self, role: ClanRole):
@@ -344,6 +345,7 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
         self.role_name.default = role.role_name
         self.color.default = role.color or ""
         self.color2.default = getattr(role, "color2", None) or ""
+        self.pingable.default = "True" if getattr(role, "is_mentionable", True) else "False"
         self.limit.default = str(role.max_members) if role.max_members else ""
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -351,6 +353,10 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
         color_val = self.color.value.strip() or None
         color2_val = self.color2.value.strip() or None
         
+        # Parse pingable input
+        pingable_str = self.pingable.value.strip().lower()
+        is_pingable = pingable_str in ["true", "yes", "1", "y", "t"]
+
         limit_val = None
         if self.limit.value:
             try:
@@ -400,6 +406,15 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
             db_role.color = color_val
             if hasattr(db_role, "color2"):
                 db_role.color2 = color2_val
+            if hasattr(db_role, "is_mentionable"):
+                db_role.is_mentionable = is_pingable
+
+            # Update in-memory self.role instance so UI retains values
+            self.role.role_name = name
+            self.role.color = color_val
+            setattr(self.role, "color2", color2_val)
+            setattr(self.role, "is_mentionable", is_pingable)
+            self.role.max_members = limit_val
 
             if db_role.hierarchy_level == 100 and limit_val is None:
                 db_role.max_members = 1
@@ -436,16 +451,16 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
                                 name=expected_d_name,
                                 color=gradient_colors[0],
                                 colors=gradient_colors,
-                                mentionable=True,
+                                mentionable=is_pingable,
                                 reason="Journey Clan Role Modification (Gradient)"
                             )
                         else:
-                            await d_role.edit(name=expected_d_name, color=primary_color, position=target_pos, mentionable=True, reason="Journey Clan Role Modification")
+                            await d_role.edit(name=expected_d_name, color=primary_color, position=target_pos, mentionable=is_pingable, reason="Journey Clan Role Modification")
                     except discord.Forbidden:
                         boost_notice += "\n⚠️ **Hierarchy Notice**: Move the 'Journey' bot role ABOVE your clan roles in Discord Server Settings ➔ Roles so the bot can apply colors, pings, and position!"
                     except Exception:
                         try:
-                            await d_role.edit(name=expected_d_name, color=primary_color, mentionable=True, reason="Journey Clan Role Modification")
+                            await d_role.edit(name=expected_d_name, color=primary_color, mentionable=is_pingable, reason="Journey Clan Role Modification")
                         except discord.Forbidden:
                             boost_notice += "\n⚠️ **Hierarchy Notice**: Move the 'Journey' bot role ABOVE your clan roles in Discord Server Settings ➔ Roles so the bot can apply colors, pings, and position!"
                         
