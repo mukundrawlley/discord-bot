@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from discord.http import Route
 import logging
 from datetime import datetime, timezone, timedelta
 import io
@@ -437,25 +438,26 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
                         except discord.Forbidden:
                             pass
 
-            # Sync Discord role properties & position cleanly below booster/staff roles and above level roles
+            # Sync Discord role properties & position cleanly via raw REST API payload
             if db_role.discord_role_id and interaction.guild:
                 d_role = interaction.guild.get_role(db_role.discord_role_id)
                 if d_role:
                     target_pos = find_clan_role_anchor_position(interaction.guild)
                     primary_color = discord.Color(c1_int) if c1_int is not None else discord.Color.default()
+
+                    route = Route('PATCH', '/guilds/{guild_id}/roles/{role_id}', guild_id=interaction.guild.id, role_id=d_role.id)
+                    json_payload = {
+                        "name": expected_d_name,
+                        "mentionable": is_pingable
+                    }
+                    if c1_int is not None:
+                        json_payload["color"] = c1_int
+                    if c1_int is not None and c2_int is not None:
+                        json_payload["colors"] = [c1_int, c2_int]
+                        json_payload["secondary_color"] = c2_int
+
                     try:
-                        if gradient_colors and interaction.guild.premium_tier >= 2:
-                            await interaction.client.http.edit_role(
-                                interaction.guild.id,
-                                d_role.id,
-                                name=expected_d_name,
-                                color=gradient_colors[0],
-                                colors=gradient_colors,
-                                mentionable=is_pingable,
-                                reason="Journey Clan Role Modification (Gradient)"
-                            )
-                        else:
-                            await d_role.edit(name=expected_d_name, color=primary_color, position=target_pos, mentionable=is_pingable, reason="Journey Clan Role Modification")
+                        await interaction.client.http.request(route, json=json_payload, reason="Journey Clan Role Modification (Gradient & Pings)")
                     except discord.Forbidden:
                         boost_notice += "\n⚠️ **Hierarchy Notice**: Move the 'Journey' bot role ABOVE your clan roles in Discord Server Settings ➔ Roles so the bot can apply colors, pings, and position!"
                     except Exception:
