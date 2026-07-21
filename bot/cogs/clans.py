@@ -99,9 +99,33 @@ def parse_color(hex_str: str) -> discord.Color:
     """Safely converts hex string to discord.Color."""
     try:
         hex_clean = hex_str.strip("#").strip()
+        if "," in hex_clean or "-" in hex_clean:
+            parts = [p.strip().strip("#") for p in hex_clean.replace("-", ",").split(",") if p.strip()]
+            hex_clean = parts[0] if parts else hex_clean
         return discord.Color(int(hex_clean, 16))
     except Exception:
         return discord.Color.default()
+
+def parse_color_gradient(hex_str: str | None, guild: discord.Guild | None = None) -> tuple[discord.Color, list[int] | None]:
+    """Converts hex or gradient string (e.g. #FF0000,#00FF00) to (primary_color, gradient_colors_array)."""
+    if not hex_str:
+        return (discord.Color.default(), None)
+    try:
+        clean_str = hex_str.strip()
+        parts = [p.strip().strip("#") for p in clean_str.replace("-", ",").split(",") if p.strip()]
+        if not parts:
+            return (discord.Color.default(), None)
+        
+        primary_int = int(parts[0], 16)
+        primary_color = discord.Color(primary_int)
+
+        if len(parts) >= 2 and guild and guild.premium_tier >= 2:
+            second_int = int(parts[1], 16)
+            return (primary_color, [primary_int, second_int])
+        
+        return (primary_color, None)
+    except Exception:
+        return (discord.Color.default(), None)
 
 def find_clan_role_anchor_position(guild: discord.Guild) -> int:
     """Calculates the target role position for clan roles:
@@ -353,11 +377,11 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
             
             # Check for gradient color input and server boost tier
             boost_notice = ""
-            if color_val and ("," in color_val or "-" in color_val):
-                if interaction.guild and interaction.guild.premium_tier < 2:
-                    parts = [p.strip().strip("#") for p in color_val.replace("-", ",").split(",") if p.strip()]
-                    color_val = f"#{parts[0]}" if parts else None
-                    boost_notice = "\n💡 *Note: Role color gradients require Server Boost Level 2+. Applied primary solid color.*"
+            primary_color, gradient_colors = parse_color_gradient(color_val, interaction.guild)
+            if color_val and ("," in color_val or "-" in color_val) and (not interaction.guild or interaction.guild.premium_tier < 2):
+                parts = [p.strip().strip("#") for p in color_val.replace("-", ",").split(",") if p.strip()]
+                color_val = f"#{parts[0]}" if parts else None
+                boost_notice = "\n💡 *Note: Role color gradients require Server Boost Level 2+. Applied primary solid color.*"
 
             db_role.color = color_val
             if db_role.hierarchy_level == 100 and limit_val is None:
@@ -385,13 +409,23 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
             if db_role.discord_role_id and interaction.guild:
                 d_role = interaction.guild.get_role(db_role.discord_role_id)
                 if d_role:
-                    d_color = parse_color(color_val) if color_val else discord.Color.default()
                     target_pos = find_clan_role_anchor_position(interaction.guild)
                     try:
-                        await d_role.edit(name=expected_d_name, color=d_color, position=target_pos, mentionable=True, reason="Journey Clan Role Modification")
+                        if gradient_colors and interaction.guild.premium_tier >= 2:
+                            await interaction.client.http.edit_role(
+                                interaction.guild.id,
+                                d_role.id,
+                                name=expected_d_name,
+                                color=gradient_colors[0],
+                                colors=gradient_colors,
+                                mentionable=True,
+                                reason="Journey Clan Role Modification (Gradient)"
+                            )
+                        else:
+                            await d_role.edit(name=expected_d_name, color=primary_color, position=target_pos, mentionable=True, reason="Journey Clan Role Modification")
                     except Exception:
                         try:
-                            await d_role.edit(name=expected_d_name, color=d_color, mentionable=True, reason="Journey Clan Role Modification")
+                            await d_role.edit(name=expected_d_name, color=primary_color, mentionable=True, reason="Journey Clan Role Modification")
                         except discord.Forbidden:
                             pass
                         
@@ -1504,6 +1538,51 @@ class ClanGroup(app_commands.Group):
         
         view = RoleManagerView(interaction.user.id, membership.clan_id, roles)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @app_commands.command(name="reorder_roles", description="Reorders all clan roles directly above a specified server level role (Leader only).")
+    @app_commands.describe(highest_level_role="The highest level/rank role on the server below which level roles reside.")
+    async def clan_reorder_roles(self, interaction: discord.Interaction, highest_level_role: discord.Role) -> None:
+        """Reorders all clan roles to sit directly above a specified server level role."""
+        if interaction.guild_id is None or interaction.guild is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        async with get_db_session() as session:
+            membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
+            if not membership or membership.clan.owner_id != interaction.user.id:
+                await interaction.followup.send("❌ Only the Clan Leader can reorder clan roles.", ephemeral=True)
+                return
+
+            roles_result = await session.execute(
+                select(ClanRole).filter_by(clan_id=membership.clan_id).order_by(ClanRole.hierarchy_level.asc())
+            )
+            clan_roles = list(roles_result.scalars())
+            if not clan_roles:
+                await interaction.followup.send("❌ No clan roles found.", ephemeral=True)
+                return
+
+            target_pos = highest_level_role.position + 1
+            reordered_summary = []
+            
+            for crole in clan_roles:
+                d_role = interaction.guild.get_role(crole.discord_role_id) if crole.discord_role_id else None
+                if not d_role:
+                    d_role = discord.utils.get(interaction.guild.roles, name=crole.role_name)
+                if d_role:
+                    try:
+                        await d_role.edit(position=target_pos, reason="Journey Clan Role Reorder above level role")
+                        reordered_summary.append(f"• **{crole.role_name}** ({d_role.mention}) ➔ Position `{target_pos}`")
+                        target_pos += 1
+                    except discord.Forbidden:
+                        reordered_summary.append(f"• **{crole.role_name}** (⚠️ Bot role is placed below this role in Server Settings -> Roles)")
+
+            embed = discord.Embed(
+                title="📶 Clan Roles Reordered",
+                description=f"Successfully placed all clan roles directly above **{highest_level_role.mention}**:\n\n" + "\n".join(reversed(reordered_summary)),
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="permissions", description="Configures permissions for a specific role (Leader only).")
     @app_commands.describe(role_name="The name of the role to customize.")
