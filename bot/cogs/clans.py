@@ -39,7 +39,15 @@ async def get_member_membership(session, guild_id: int, user_id: int) -> ClanMem
         )
         .filter_by(guild_id=guild_id, user_id=user_id)
     )
-    return result.scalar_one_or_none()
+    membership = result.scalar_one_or_none()
+    if membership and not membership.clan:
+        try:
+            await session.delete(membership)
+            await session.commit()
+        except Exception:
+            pass
+        return None
+    return membership
 
 async def write_audit_log(session, clan_id: int, actor_id: int, action: str, old_val: str | None = None, new_val: str | None = None) -> None:
     """Helper to log actions in the database."""
@@ -2232,6 +2240,10 @@ class ClanGroup(app_commands.Group):
                     if not clan:
                         await interaction.followup.send(f"❌ No clan found with name '{target}'.", ephemeral=True)
                         return
+
+            if not clan:
+                await interaction.followup.send("❌ No clan found or you are not currently in a clan. Use `/clan create` to register one!", ephemeral=True)
+                return
 
             # Eager load members sorted by hierarchy level
             members_result = await session.execute(

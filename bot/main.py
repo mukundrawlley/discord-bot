@@ -81,6 +81,20 @@ class JourneyBot(commands.Bot):
             
         self.tree.interaction_check = global_interaction_check
 
+        # Global App Command Error Handler to prevent forever "Journey is thinking..." states
+        async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+            logger.error(f"Slash command exception on '{interaction.command}': {error}", exc_info=error)
+            msg = "❌ An unexpected error occurred while executing this command."
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=True)
+            except Exception:
+                pass
+                
+        self.tree.on_error = on_tree_error
+
         # Initialize Playwright browser cache
         try:
             from bot.services.browser import BrowserManager
