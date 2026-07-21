@@ -450,21 +450,34 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
                         "name": expected_d_name,
                         "mentionable": is_pingable
                     }
-                    if c1_int is not None:
-                        json_payload["color"] = c1_int
                     if c1_int is not None and c2_int is not None:
-                        json_payload["colors"] = [c1_int, c2_int]
+                        json_payload["color"] = c1_int
                         json_payload["secondary_color"] = c2_int
+                        json_payload["colors"] = {
+                            "primary_color": c1_int,
+                            "secondary_color": c2_int,
+                            "tertiary_color": None
+                        }
+                        json_payload["role_colors"] = {
+                            "primary_color": c1_int,
+                            "secondary_color": c2_int,
+                            "tertiary_color": None
+                        }
+                    elif c1_int is not None:
+                        json_payload["color"] = c1_int
 
                     try:
-                        await interaction.client.http.request(route, json=json_payload, reason="Journey Clan Role Modification (Gradient & Pings)")
+                        await interaction.client.http.request(route, json=json_payload, reason="Journey Clan Role Modification (Enhanced Gradient & Pings)")
                     except discord.Forbidden:
                         boost_notice += "\n⚠️ **Hierarchy Notice**: Move the 'Journey' bot role ABOVE your clan roles in Discord Server Settings ➔ Roles so the bot can apply colors, pings, and position!"
-                    except Exception:
-                        try:
-                            await d_role.edit(name=expected_d_name, color=primary_color, mentionable=is_pingable, reason="Journey Clan Role Modification")
-                        except discord.Forbidden:
-                            boost_notice += "\n⚠️ **Hierarchy Notice**: Move the 'Journey' bot role ABOVE your clan roles in Discord Server Settings ➔ Roles so the bot can apply colors, pings, and position!"
+                    except discord.HTTPException as e:
+                        if e.status in (400, 403):
+                            boost_notice += "\n⚠️ **Role Style Notice**: Creating dual-color gradient roles requires Server Boost Level 2 or Enhanced Role Styles. Fallback primary color applied."
+                        else:
+                            try:
+                                await d_role.edit(name=expected_d_name, color=primary_color, mentionable=is_pingable, reason="Journey Clan Role Modification")
+                            except Exception:
+                                pass
                         
             # Log action
             await write_audit_log(
