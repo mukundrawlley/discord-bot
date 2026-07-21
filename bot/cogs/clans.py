@@ -331,18 +331,23 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
             old_name = db_role.role_name
             db_role.role_name = name
             db_role.color = color_val
-            if db_role.hierarchy_level == 100:
+            if db_role.hierarchy_level == 100 and limit_val is None:
                 db_role.max_members = 1
             else:
                 db_role.max_members = limit_val
             
+            # Fetch clan name for prefixing
+            clan_res = await session.execute(select(Clan).filter_by(id=db_role.clan_id))
+            clan_obj = clan_res.scalar_one_or_none()
+            expected_d_name = f"{clan_obj.name} {name}" if clan_obj else name
+
             # Sync Discord role properties
             if db_role.discord_role_id:
                 d_role = interaction.guild.get_role(db_role.discord_role_id)
                 if d_role:
                     d_color = parse_color(color_val) if color_val else discord.Color.default()
                     try:
-                        await d_role.edit(name=name, color=d_color, reason="Journey Clan Role Modification")
+                        await d_role.edit(name=expected_d_name, color=d_color, reason="Journey Clan Role Modification")
                     except discord.Forbidden:
                         pass
                         
@@ -2324,7 +2329,7 @@ class ClanGroup(app_commands.Group):
             role_suffix = ""
             if m.role:
                 if m.role.hierarchy_level == 100:
-                    role_suffix = " (Leader) 👑"
+                    role_suffix = f" ({m.role.role_name}) 👑"
                 else:
                     role_suffix = f" ({m.role.role_name})"
                     
@@ -2704,12 +2709,25 @@ async def audit_clan_health(session: AsyncSession, guild: discord.Guild, clan: C
     member_db_role = next((r for r in db_roles if r.hierarchy_level == 1), None)
 
     leader_d_role = guild.get_role(leader_db_role.discord_role_id) if (leader_db_role and leader_db_role.discord_role_id) else None
-    if not leader_d_role:
-        leader_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Leader")
+    if not leader_d_role and leader_db_role:
+        leader_d_role = discord.utils.get(guild.roles, name=f"{clan.name} {leader_db_role.role_name}")
+        if not leader_d_role:
+            leader_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Leader")
 
     member_d_role = guild.get_role(member_db_role.discord_role_id) if (member_db_role and member_db_role.discord_role_id) else None
-    if not member_d_role:
-        member_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Member")
+    if not member_d_role and member_db_role:
+        member_d_role = discord.utils.get(guild.roles, name=f"{clan.name} {member_db_role.role_name}")
+        if not member_d_role:
+            member_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Member")
+
+    role_mismatches = False
+    for r in db_roles:
+        d_r = guild.get_role(r.discord_role_id) if r.discord_role_id else None
+        if not d_r:
+            d_r = discord.utils.get(guild.roles, name=f"{clan.name} {r.role_name}")
+        if not d_r or d_r.name != f"{clan.name} {r.role_name}":
+            role_mismatches = True
+            break
 
     # Onboarding Applicant Role
     from bot.models.clan import ClanOnboarding
@@ -2742,11 +2760,13 @@ async def audit_clan_health(session: AsyncSession, guild: discord.Guild, clan: C
         not onboarding_d_role or
         not owner_has_role or
         not text_chan or
-        not voice_chan
+        not voice_chan or
+        role_mismatches
     )
 
     return {
         "clan": clan,
+        "db_roles": db_roles,
         "leader_db_role": leader_db_role,
         "member_db_role": member_db_role,
         "leader_d_role": leader_d_role,
@@ -2769,26 +2789,42 @@ async def execute_clan_repair(
 ) -> dict:
     """Repairs missing roles, permissions, channels, and owner assignments for a clan."""
     clan = audit_data["clan"]
+    db_roles = audit_data.get("db_roles", [])
+    if not db_roles:
+        roles_res = await session.execute(select(ClanRole).filter_by(clan_id=clan.id))
+        db_roles = list(roles_res.scalars())
+
     summary = {"roles_created": 0, "text_created": False, "voice_created": False, "owner_assigned": False}
 
-    # 1. Leader & Member Discord Roles
-    leader_d_role = audit_data["leader_d_role"]
-    if not leader_d_role:
-        leader_d_role = await guild.create_role(
-            name=f"{clan.name} Leader",
-            color=discord.Color.gold(),
-            reason="Journey Clan Repair: Missing Leader role."
-        )
-        summary["roles_created"] += 1
+    # 1. Sync & repair all custom clan roles on Discord
+    leader_d_role = None
+    member_d_role = None
 
-    member_d_role = audit_data["member_d_role"]
-    if not member_d_role:
-        member_d_role = await guild.create_role(
-            name=f"{clan.name} Member",
-            color=discord.Color.blue(),
-            reason="Journey Clan Repair: Missing Member role."
-        )
-        summary["roles_created"] += 1
+    for r in db_roles:
+        expected_name = f"{clan.name} {r.role_name}"
+        d_role = guild.get_role(r.discord_role_id) if r.discord_role_id else None
+        if not d_role:
+            d_role = discord.utils.get(guild.roles, name=expected_name)
+
+        if not d_role:
+            role_color = parse_color(r.color) if r.color else discord.Color.blue()
+            d_role = await guild.create_role(
+                name=expected_name,
+                color=role_color,
+                reason=f"Journey Clan Repair: Created missing role '{r.role_name}'."
+            )
+            summary["roles_created"] += 1
+        elif d_role.name != expected_name:
+            try:
+                await d_role.edit(name=expected_name, reason="Journey Clan Repair: Rename role to match custom name.")
+            except discord.Forbidden:
+                pass
+
+        r.discord_role_id = d_role.id
+        if r.hierarchy_level == 100:
+            leader_d_role = d_role
+        elif r.hierarchy_level == 1:
+            member_d_role = d_role
 
     # Onboarding Applicant Role
     from bot.models.clan import ClanOnboarding
@@ -2814,60 +2850,14 @@ async def execute_clan_repair(
         onboarding_mapping.discord_role_id = onboarding_d_role.id
         onboarding_mapping.enabled = True
 
-    # DB ClanRole records
-    leader_db_role = audit_data["leader_db_role"]
-    if not leader_db_role:
-        leader_db_role = ClanRole(
-            clan_id=clan.id,
-            discord_role_id=leader_d_role.id,
-            role_name="Leader",
-            color="#FFD700",
-            hierarchy_level=100,
-            max_members=1,
-            is_system_role=True
-        )
-        session.add(leader_db_role)
-        await session.flush()
-    else:
-        leader_db_role.discord_role_id = leader_d_role.id
-
-    member_db_role = audit_data["member_db_role"]
-    if not member_db_role:
-        member_db_role = ClanRole(
-            clan_id=clan.id,
-            discord_role_id=member_d_role.id,
-            role_name="Member",
-            color="#3498DB",
-            hierarchy_level=1,
-            is_system_role=True
-        )
-        session.add(member_db_role)
-        await session.flush()
-    else:
-        member_db_role.discord_role_id = member_d_role.id
-
-    # System Role Permissions
-    from bot.models.clan import create_default_permissions
-    await create_default_permissions(session, leader_db_role.id, is_leader=True)
-    await create_default_permissions(session, member_db_role.id, is_leader=False)
-
-    # Clan Owner Membership & Discord Role
-    owner_member_res = await session.execute(
-        select(ClanMember).filter_by(clan_id=clan.id, user_id=clan.owner_id)
-    )
-    owner_membership = owner_member_res.scalar_one_or_none()
-    if not owner_membership:
-        owner_membership = ClanMember(
-            guild_id=guild.id,
-            user_id=clan.owner_id,
-            clan_id=clan.id,
-            role_id=leader_db_role.id
-        )
-        session.add(owner_membership)
-
-    owner_discord_member = guild.get_member(clan.owner_id)
-    if owner_discord_member and leader_d_role not in owner_discord_member.roles:
+    # Assign correct Discord roles to ALL clan members
+    members_res = await session.execute(select(ClanMember).filter_by(clan_id=clan.id))
+    clan_members = list(members_res.scalars())
+    for m in clan_members:
         try:
+            await sync_discord_roles(guild, m.user_id, m.role_id, db_roles)
+        except Exception:
+            pass
             await owner_discord_member.add_roles(leader_d_role, reason="Journey Clan Repair: Owner role assignment.")
             summary["owner_assigned"] = True
         except discord.Forbidden:
