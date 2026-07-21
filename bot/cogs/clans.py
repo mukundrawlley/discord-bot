@@ -103,6 +103,27 @@ def parse_color(hex_str: str) -> discord.Color:
     except Exception:
         return discord.Color.default()
 
+def find_clan_role_anchor_position(guild: discord.Guild) -> int:
+    """Calculates the target role position for clan roles:
+    - Below Server Booster roles and custom staff/developer roles
+    - Above server dedicated level roles (e.g. Level 1, Level 10, AmariBot/Arcane level roles)
+    """
+    bot_top = max(1, guild.me.top_role.position - 1)
+    roles = [r for r in guild.roles if not r.is_integration() and not r.managed and r != guild.default_role]
+    
+    # 1. Look for Server Booster role
+    booster_role = next((r for r in reversed(roles) if r.is_premium_subscriber() or "booster" in r.name.lower()), None)
+    if booster_role:
+        return max(1, booster_role.position - 1)
+
+    # 2. Look for highest level-based role (e.g. "Level", "Lvl", "Rank")
+    level_roles = [r for r in roles if any(k in r.name.lower() for k in ["level", "lvl", "rank "])]
+    if level_roles:
+        highest_level = max(level_roles, key=lambda r: r.position)
+        return min(bot_top, highest_level.position + 1)
+
+    return bot_top
+
 # ==============================================================================
 # VIEWS & COMPONENT INTERFACES
 # ==============================================================================
@@ -360,12 +381,12 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
                         except discord.Forbidden:
                             pass
 
-            # Sync Discord role properties & position below bot
+            # Sync Discord role properties & position cleanly below booster/staff roles and above level roles
             if db_role.discord_role_id and interaction.guild:
                 d_role = interaction.guild.get_role(db_role.discord_role_id)
                 if d_role:
                     d_color = parse_color(color_val) if color_val else discord.Color.default()
-                    target_pos = max(1, interaction.guild.me.top_role.position - 1)
+                    target_pos = find_clan_role_anchor_position(interaction.guild)
                     try:
                         await d_role.edit(name=expected_d_name, color=d_color, position=target_pos, mentionable=True, reason="Journey Clan Role Modification")
                     except Exception:
