@@ -327,42 +327,65 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
             # Load from DB to prevent detached state
             role_result = await session.execute(select(ClanRole).filter_by(id=self.role.id))
             db_role = role_result.scalar_one()
-            
             old_name = db_role.role_name
             db_role.role_name = name
+            
+            # Check for gradient color input and server boost tier
+            boost_notice = ""
+            if color_val and ("," in color_val or "-" in color_val):
+                if interaction.guild and interaction.guild.premium_tier < 2:
+                    parts = [p.strip().strip("#") for p in color_val.replace("-", ",").split(",") if p.strip()]
+                    color_val = f"#{parts[0]}" if parts else None
+                    boost_notice = "\n💡 *Note: Role color gradients require Server Boost Level 2+. Applied primary solid color.*"
+
             db_role.color = color_val
             if db_role.hierarchy_level == 100 and limit_val is None:
                 db_role.max_members = 1
             else:
                 db_role.max_members = limit_val
             
-            # Fetch clan name for prefixing
             clan_res = await session.execute(select(Clan).filter_by(id=db_role.clan_id))
             clan_obj = clan_res.scalar_one_or_none()
-            expected_d_name = f"{clan_obj.name} {name}" if clan_obj else name
 
-            # Sync Discord role properties
-            if db_role.discord_role_id:
+            # Exact role name specified by leader (no clan prefix)
+            expected_d_name = name
+
+            # Clean up old duplicate/legacy roles on Discord if they exist
+            if clan_obj and interaction.guild:
+                legacy_names = [f"{clan_obj.name} {old_name}", f"{clan_obj.name} Leader", f"{clan_obj.name} Member", f"{clan_obj.name} {name}"]
+                for g_role in interaction.guild.roles:
+                    if g_role.id != db_role.discord_role_id and g_role.name in legacy_names:
+                        try:
+                            await g_role.delete(reason="Journey Clan Role Edit: Cleaned up old duplicate role.")
+                        except discord.Forbidden:
+                            pass
+
+            # Sync Discord role properties & position below bot
+            if db_role.discord_role_id and interaction.guild:
                 d_role = interaction.guild.get_role(db_role.discord_role_id)
                 if d_role:
                     d_color = parse_color(color_val) if color_val else discord.Color.default()
+                    target_pos = max(1, interaction.guild.me.top_role.position - 1)
                     try:
-                        await d_role.edit(name=expected_d_name, color=d_color, reason="Journey Clan Role Modification")
-                    except discord.Forbidden:
-                        pass
+                        await d_role.edit(name=expected_d_name, color=d_color, position=target_pos, reason="Journey Clan Role Modification")
+                    except Exception:
+                        try:
+                            await d_role.edit(name=expected_d_name, color=d_color, reason="Journey Clan Role Modification")
+                        except discord.Forbidden:
+                            pass
                         
             # Log action
             await write_audit_log(
-                session, 
-                db_role.clan_id, 
-                interaction.user.id, 
-                "role_modified", 
-                f"Name: {old_name}", 
+                session,
+                self.role.clan_id,
+                interaction.user.id,
+                "role_updated",
+                old_name,
                 f"Name: {name}, Color: {color_val}, Limit: {limit_val}"
             )
             await session.commit()
             
-        await interaction.response.send_message(f"✅ Modified role **{name}** successfully!", ephemeral=True)
+        await interaction.response.send_message(f"✅ Updated role to **{name}**! Synced Discord role name, color, and hierarchy.{boost_notice}", ephemeral=True)
 
 
 class RoleManagerView(discord.ui.View):
@@ -2710,13 +2733,17 @@ async def audit_clan_health(session: AsyncSession, guild: discord.Guild, clan: C
 
     leader_d_role = guild.get_role(leader_db_role.discord_role_id) if (leader_db_role and leader_db_role.discord_role_id) else None
     if not leader_d_role and leader_db_role:
-        leader_d_role = discord.utils.get(guild.roles, name=f"{clan.name} {leader_db_role.role_name}")
+        leader_d_role = discord.utils.get(guild.roles, name=leader_db_role.role_name)
+        if not leader_d_role:
+            leader_d_role = discord.utils.get(guild.roles, name=f"{clan.name} {leader_db_role.role_name}")
         if not leader_d_role:
             leader_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Leader")
 
     member_d_role = guild.get_role(member_db_role.discord_role_id) if (member_db_role and member_db_role.discord_role_id) else None
     if not member_d_role and member_db_role:
-        member_d_role = discord.utils.get(guild.roles, name=f"{clan.name} {member_db_role.role_name}")
+        member_d_role = discord.utils.get(guild.roles, name=member_db_role.role_name)
+        if not member_d_role:
+            member_d_role = discord.utils.get(guild.roles, name=f"{clan.name} {member_db_role.role_name}")
         if not member_d_role:
             member_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Member")
 
@@ -2724,8 +2751,8 @@ async def audit_clan_health(session: AsyncSession, guild: discord.Guild, clan: C
     for r in db_roles:
         d_r = guild.get_role(r.discord_role_id) if r.discord_role_id else None
         if not d_r:
-            d_r = discord.utils.get(guild.roles, name=f"{clan.name} {r.role_name}")
-        if not d_r or d_r.name != f"{clan.name} {r.role_name}":
+            d_r = discord.utils.get(guild.roles, name=r.role_name)
+        if not d_r or d_r.name != r.role_name:
             role_mismatches = True
             break
 
@@ -2796,15 +2823,22 @@ async def execute_clan_repair(
 
     summary = {"roles_created": 0, "text_created": False, "voice_created": False, "owner_assigned": False}
 
-    # 1. Sync & repair all custom clan roles on Discord
+    # 1. Sync & repair all custom clan roles on Discord (exact role name matching)
+    active_discord_role_ids = []
     leader_d_role = None
     member_d_role = None
 
     for r in db_roles:
-        expected_name = f"{clan.name} {r.role_name}"
+        expected_name = r.role_name
         d_role = guild.get_role(r.discord_role_id) if r.discord_role_id else None
         if not d_role:
             d_role = discord.utils.get(guild.roles, name=expected_name)
+        if not d_role:
+            d_role = discord.utils.get(guild.roles, name=f"{clan.name} {r.role_name}")
+        if not d_role and r.hierarchy_level == 100:
+            d_role = discord.utils.get(guild.roles, name=f"{clan.name} Leader")
+        if not d_role and r.hierarchy_level == 1:
+            d_role = discord.utils.get(guild.roles, name=f"{clan.name} Member")
 
         if not d_role:
             role_color = parse_color(r.color) if r.color else discord.Color.blue()
@@ -2816,11 +2850,13 @@ async def execute_clan_repair(
             summary["roles_created"] += 1
         elif d_role.name != expected_name:
             try:
-                await d_role.edit(name=expected_name, reason="Journey Clan Repair: Rename role to match custom name.")
+                await d_role.edit(name=expected_name, reason="Journey Clan Repair: Rename role to match exact custom name.")
             except discord.Forbidden:
                 pass
 
         r.discord_role_id = d_role.id
+        active_discord_role_ids.append(d_role.id)
+
         if r.hierarchy_level == 100:
             leader_d_role = d_role
         elif r.hierarchy_level == 1:
@@ -2849,6 +2885,28 @@ async def execute_clan_repair(
     else:
         onboarding_mapping.discord_role_id = onboarding_d_role.id
         onboarding_mapping.enabled = True
+
+    # Clean up old duplicate/legacy Discord roles for this clan
+    legacy_role_names = [f"{clan.name} Leader", f"{clan.name} Member"] + [f"{clan.name} {r.role_name}" for r in db_roles]
+    for g_role in guild.roles:
+        if g_role.id not in active_discord_role_ids and g_role.id != onboarding_d_role.id:
+            if g_role.name in legacy_role_names:
+                try:
+                    await g_role.delete(reason="Journey Clan Repair: Clean up duplicate/legacy clan role.")
+                except discord.Forbidden:
+                    pass
+
+    # Position clan roles right below Journey Bot's top role
+    bot_top_pos = max(1, guild.me.top_role.position - 1)
+    db_roles_sorted = sorted(db_roles, key=lambda r: r.hierarchy_level, reverse=True)
+    for r in db_roles_sorted:
+        dr = guild.get_role(r.discord_role_id)
+        if dr:
+            try:
+                await dr.edit(position=bot_top_pos, reason="Journey Clan Repair: Position below Journey bot role")
+            except Exception:
+                pass
+            bot_top_pos = max(1, bot_top_pos - 1)
 
     # Assign correct Discord roles to ALL clan members
     members_res = await session.execute(select(ClanMember).filter_by(clan_id=clan.id))
