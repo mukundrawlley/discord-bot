@@ -334,7 +334,8 @@ class RoleCreateModal(discord.ui.Modal, title="Create Clan Role"):
 
 class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
     role_name = discord.ui.TextInput(label="Role Name", placeholder="e.g. Commander", max_length=64)
-    color = discord.ui.TextInput(label="Hex Color (Optional)", placeholder="e.g. #FFCC00", required=False, max_length=7)
+    color = discord.ui.TextInput(label="Primary Hex Color (Optional)", placeholder="e.g. #FFCC00", required=False, max_length=7)
+    color2 = discord.ui.TextInput(label="Secondary Gradient Color (Optional)", placeholder="e.g. #00FF00 (Level 2+ Boost)", required=False, max_length=7)
     limit = discord.ui.TextInput(label="Max Member Limit (Optional)", placeholder="e.g. 5 (0 or leave blank for unlimited)", required=False)
 
     def __init__(self, role: ClanRole):
@@ -342,11 +343,13 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
         self.role = role
         self.role_name.default = role.role_name
         self.color.default = role.color or ""
+        self.color2.default = getattr(role, "color2", None) or ""
         self.limit.default = str(role.max_members) if role.max_members else ""
 
     async def on_submit(self, interaction: discord.Interaction):
         name = self.role_name.value.strip()
         color_val = self.color.value.strip() or None
+        color2_val = self.color2.value.strip() or None
         
         limit_val = None
         if self.limit.value:
@@ -377,13 +380,27 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
             
             # Check for gradient color input and server boost tier
             boost_notice = ""
-            primary_color, gradient_colors = parse_color_gradient(color_val, interaction.guild)
-            if color_val and ("," in color_val or "-" in color_val) and (not interaction.guild or interaction.guild.premium_tier < 2):
-                parts = [p.strip().strip("#") for p in color_val.replace("-", ",").split(",") if p.strip()]
-                color_val = f"#{parts[0]}" if parts else None
+            c1_int = None
+            c2_int = None
+            if color_val:
+                try:
+                    c1_int = int(color_val.strip("#"), 16)
+                except ValueError:
+                    c1_int = None
+            if color2_val:
+                try:
+                    c2_int = int(color2_val.strip("#"), 16)
+                except ValueError:
+                    c2_int = None
+
+            gradient_colors = [c1_int, c2_int] if (c1_int is not None and c2_int is not None) else None
+            if color2_val and (not interaction.guild or interaction.guild.premium_tier < 2):
                 boost_notice = "\n💡 *Note: Role color gradients require Server Boost Level 2+. Applied primary solid color.*"
 
             db_role.color = color_val
+            if hasattr(db_role, "color2"):
+                db_role.color2 = color2_val
+
             if db_role.hierarchy_level == 100 and limit_val is None:
                 db_role.max_members = 1
             else:
@@ -410,6 +427,7 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
                 d_role = interaction.guild.get_role(db_role.discord_role_id)
                 if d_role:
                     target_pos = find_clan_role_anchor_position(interaction.guild)
+                    primary_color = discord.Color(c1_int) if c1_int is not None else discord.Color.default()
                     try:
                         if gradient_colors and interaction.guild.premium_tier >= 2:
                             await interaction.client.http.edit_role(
@@ -423,11 +441,13 @@ class RoleEditModal(discord.ui.Modal, title="Edit Clan Role"):
                             )
                         else:
                             await d_role.edit(name=expected_d_name, color=primary_color, position=target_pos, mentionable=True, reason="Journey Clan Role Modification")
+                    except discord.Forbidden:
+                        boost_notice += "\n⚠️ **Hierarchy Notice**: Move the 'Journey' bot role ABOVE your clan roles in Discord Server Settings ➔ Roles so the bot can apply colors, pings, and position!"
                     except Exception:
                         try:
                             await d_role.edit(name=expected_d_name, color=primary_color, mentionable=True, reason="Journey Clan Role Modification")
                         except discord.Forbidden:
-                            pass
+                            boost_notice += "\n⚠️ **Hierarchy Notice**: Move the 'Journey' bot role ABOVE your clan roles in Discord Server Settings ➔ Roles so the bot can apply colors, pings, and position!"
                         
             # Log action
             await write_audit_log(

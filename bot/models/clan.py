@@ -91,6 +91,7 @@ class ClanRole(Base):
     role_name: Mapped[str] = mapped_column(String(64))
     description: Mapped[str | None] = mapped_column(String(256), nullable=True)
     color: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    color2: Mapped[str | None] = mapped_column(String(7), nullable=True)
     emoji: Mapped[str | None] = mapped_column(String(64), nullable=True)
     icon: Mapped[str | None] = mapped_column(String(256), nullable=True)
     

@@ -167,6 +167,13 @@ class JourneyBot(commands.Bot):
                             logger.info("Adding missing column discord_category_id to clans...")
                             connection.execute(text("ALTER TABLE clans ADD COLUMN discord_category_id BIGINT"))
                     
+                    # Check clan_roles table
+                    if "clan_roles" in inspector.get_table_names():
+                        clan_roles_cols = [col['name'] for col in inspector.get_columns("clan_roles")]
+                        if "color2" not in clan_roles_cols:
+                            logger.info("Adding missing column color2 to clan_roles...")
+                            connection.execute(text("ALTER TABLE clan_roles ADD COLUMN color2 VARCHAR(7)"))
+                    
                     # Check clan_role_permissions table columns dynamically
                     if "clan_role_permissions" in inspector.get_table_names():
                         from bot.models.clan import ClanRolePermission
