@@ -2477,6 +2477,331 @@ class ClanGroup(app_commands.Group):
                             
         await interaction.response.send_message(f"💥 Clan **{clan_name}** has been forcibly disbanded by staff.")
 
+    @app_commands.command(name="repair", description="Audits & repairs missing roles/channels for approved clans (Staff Only).")
+    @app_commands.describe(name="Optional: Target a specific clan to repair (leave blank for all approved clans).")
+    async def clan_repair(self, interaction: discord.Interaction, name: str | None = None) -> None:
+        """Staff command to audit and repair missing roles/channels for approved clans."""
+        if interaction.guild_id is None or interaction.guild is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+
+        perms = interaction.user.guild_permissions
+        is_staff = perms.administrator or perms.manage_guild or perms.manage_roles or (interaction.guild.owner_id == interaction.user.id)
+        if not is_staff:
+            await interaction.response.send_message("❌ Only server administrators or staff can run clan repairs.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        async with get_db_session() as session:
+            query = select(Clan).filter_by(guild_id=guild.id, approved=True)
+            if name:
+                query = query.filter(Clan.name.ilike(name))
+
+            clans_res = await session.execute(query)
+            clans = list(clans_res.scalars())
+
+            if not clans:
+                msg = f"❌ No approved clan found matching '{name}'." if name else "❌ No approved clans found in this server."
+                await interaction.followup.send(msg, ephemeral=True)
+                return
+
+            audit_results = []
+            for clan in clans:
+                audit_info = await audit_clan_health(session, guild, clan)
+                audit_results.append(audit_info)
+
+            embed = build_repair_audit_embed(guild, audit_results)
+            view = ClanRepairView(interaction.user.id, audit_results)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+# ==============================================================================
+# CLAN REPAIR AUDIT & EXECUTION HELPERS
+# ==============================================================================
+
+async def audit_clan_health(session: AsyncSession, guild: discord.Guild, clan: Clan) -> dict:
+    """Audits the Discord and DB health of an approved clan."""
+    roles_res = await session.execute(select(ClanRole).filter_by(clan_id=clan.id))
+    db_roles = list(roles_res.scalars())
+    leader_db_role = next((r for r in db_roles if r.hierarchy_level == 100), None)
+    member_db_role = next((r for r in db_roles if r.hierarchy_level == 1), None)
+
+    leader_d_role = guild.get_role(leader_db_role.discord_role_id) if (leader_db_role and leader_db_role.discord_role_id) else None
+    if not leader_d_role:
+        leader_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Leader")
+
+    member_d_role = guild.get_role(member_db_role.discord_role_id) if (member_db_role and member_db_role.discord_role_id) else None
+    if not member_d_role:
+        member_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Member")
+
+    owner_member = guild.get_member(clan.owner_id)
+    owner_has_role = bool(owner_member and leader_d_role and leader_d_role in owner_member.roles)
+
+    text_chan = guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
+    if not text_chan:
+        text_chan = discord.utils.get(guild.text_channels, name=f"💬-{clan.name.lower().replace(' ', '-')}")
+
+    voice_chan = guild.get_channel(clan.discord_voice_channel_id) if clan.discord_voice_channel_id else None
+    if not voice_chan:
+        voice_chan = discord.utils.get(guild.voice_channels, name=f"🔊-{clan.name.lower().replace(' ', '-')}")
+
+    category = guild.get_channel(clan.discord_category_id) if clan.discord_category_id else None
+
+    needs_repair = (
+        not leader_d_role or
+        not member_d_role or
+        not owner_has_role or
+        not text_chan or
+        not voice_chan
+    )
+
+    return {
+        "clan": clan,
+        "leader_db_role": leader_db_role,
+        "member_db_role": member_db_role,
+        "leader_d_role": leader_d_role,
+        "member_d_role": member_d_role,
+        "owner_has_role": owner_has_role,
+        "text_chan": text_chan,
+        "voice_chan": voice_chan,
+        "category": category,
+        "needs_repair": needs_repair
+    }
+
+
+async def execute_clan_repair(
+    session: AsyncSession,
+    guild: discord.Guild,
+    audit_data: dict,
+    category_name: str = "🏆 CLAN CATEGORY"
+) -> dict:
+    """Repairs missing roles, permissions, channels, and owner assignments for a clan."""
+    clan = audit_data["clan"]
+    summary = {"roles_created": 0, "text_created": False, "voice_created": False, "owner_assigned": False}
+
+    # 1. Leader & Member Discord Roles
+    leader_d_role = audit_data["leader_d_role"]
+    if not leader_d_role:
+        leader_d_role = await guild.create_role(
+            name=f"{clan.name} Leader",
+            color=discord.Color.gold(),
+            reason="Journey Clan Repair: Missing Leader role."
+        )
+        summary["roles_created"] += 1
+
+    member_d_role = audit_data["member_d_role"]
+    if not member_d_role:
+        member_d_role = await guild.create_role(
+            name=f"{clan.name} Member",
+            color=discord.Color.blue(),
+            reason="Journey Clan Repair: Missing Member role."
+        )
+        summary["roles_created"] += 1
+
+    # DB ClanRole records
+    leader_db_role = audit_data["leader_db_role"]
+    if not leader_db_role:
+        leader_db_role = ClanRole(
+            clan_id=clan.id,
+            discord_role_id=leader_d_role.id,
+            role_name="Leader",
+            color="#FFD700",
+            hierarchy_level=100,
+            max_members=1,
+            is_system_role=True
+        )
+        session.add(leader_db_role)
+        await session.flush()
+    else:
+        leader_db_role.discord_role_id = leader_d_role.id
+
+    member_db_role = audit_data["member_db_role"]
+    if not member_db_role:
+        member_db_role = ClanRole(
+            clan_id=clan.id,
+            discord_role_id=member_d_role.id,
+            role_name="Member",
+            color="#3498DB",
+            hierarchy_level=1,
+            is_system_role=True
+        )
+        session.add(member_db_role)
+        await session.flush()
+    else:
+        member_db_role.discord_role_id = member_d_role.id
+
+    # System Role Permissions
+    from bot.models.clan import create_default_permissions
+    await create_default_permissions(session, leader_db_role.id, is_leader=True)
+    await create_default_permissions(session, member_db_role.id, is_leader=False)
+
+    # Clan Owner Membership & Discord Role
+    owner_member_res = await session.execute(
+        select(ClanMember).filter_by(clan_id=clan.id, user_id=clan.owner_id)
+    )
+    owner_membership = owner_member_res.scalar_one_or_none()
+    if not owner_membership:
+        owner_membership = ClanMember(
+            guild_id=guild.id,
+            user_id=clan.owner_id,
+            clan_id=clan.id,
+            role_id=leader_db_role.id
+        )
+        session.add(owner_membership)
+
+    owner_discord_member = guild.get_member(clan.owner_id)
+    if owner_discord_member and leader_d_role not in owner_discord_member.roles:
+        try:
+            await owner_discord_member.add_roles(leader_d_role, reason="Journey Clan Repair: Owner role assignment.")
+            summary["owner_assigned"] = True
+        except discord.Forbidden:
+            pass
+
+    # 2. Category & Private Channels
+    category = audit_data["category"]
+    if not category:
+        category = discord.utils.get(guild.categories, name=category_name)
+        if not category:
+            category = await guild.create_category(name=category_name, reason="Journey Clan Category Setup")
+    clan.discord_category_id = category.id
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member_d_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        leader_d_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True),
+        guild.me.top_role: discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
+    }
+
+    text_chan = audit_data["text_chan"]
+    if not text_chan:
+        text_chan = await guild.create_text_channel(
+            name=f"💬-{clan.name.lower().replace(' ', '-')}",
+            category=category,
+            overwrites=overwrites,
+            topic=f"Official private channel for {clan.name}.",
+            reason="Journey Clan Repair: Create missing text channel."
+        )
+        summary["text_created"] = True
+    clan.discord_text_channel_id = text_chan.id
+
+    voice_chan = audit_data["voice_chan"]
+    if not voice_chan:
+        voice_chan = await guild.create_voice_channel(
+            name=f"🔊-{clan.name.lower().replace(' ', '-')}",
+            category=category,
+            overwrites=overwrites,
+            reason="Journey Clan Repair: Create missing voice channel."
+        )
+        summary["voice_created"] = True
+    clan.discord_voice_channel_id = voice_chan.id
+
+    await write_audit_log(session, clan.id, guild.owner_id, "clan_repaired")
+    await session.commit()
+    return summary
+
+
+def build_repair_audit_embed(guild: discord.Guild, audit_results: list[dict]) -> discord.Embed:
+    """Builds a formatted Embed summarizing clan health audit results."""
+    degraded_count = sum(1 for res in audit_results if res["needs_repair"])
+    total_count = len(audit_results)
+
+    embed = discord.Embed(
+        title="🛠️ Clan System Diagnostic & Repair Dashboard",
+        description=f"Scanned **{total_count}** approved clan(s). Found **{degraded_count}** clan(s) needing role/channel repairs.",
+        color=discord.Color.orange() if degraded_count > 0 else discord.Color.green(),
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    for item in audit_results[:10]: # cap at 10 to avoid field length limit
+        clan = item["clan"]
+        leader_r = "🟢" if item["leader_d_role"] else "🔴 Missing"
+        member_r = "🟢" if item["member_d_role"] else "🔴 Missing"
+        owner_r = "🟢" if item["owner_has_role"] else "🔴 Missing"
+        text_c = "🟢" if item["text_chan"] else "🔴 Missing"
+        voice_c = "🟢" if item["voice_chan"] else "🔴 Missing"
+
+        status = "🟢 Healthy" if not item["needs_repair"] else "⚠️ Degraded (Needs Repair)"
+
+        val = (
+            f"**Status:** {status}\n"
+            f"• **Leader Role:** {leader_r} | **Member Role:** {member_r}\n"
+            f"• **Owner Assigned:** {owner_r}\n"
+            f"• **Text Channel:** {text_c} | **Voice Channel:** {voice_c}"
+        )
+        embed.add_field(name=f"🛡️ {clan.name}", value=val, inline=False)
+
+    if total_count > 10:
+        embed.set_footer(text=f"And {total_count - 10} more clans...")
+
+    return embed
+
+
+class ClanRepairView(discord.ui.View):
+    def __init__(self, staff_id: int, audit_results: list[dict]):
+        super().__init__(timeout=180.0)
+        self.staff_id = staff_id
+        self.audit_results = audit_results
+        self.degraded = [r for r in audit_results if r["needs_repair"]]
+
+        # Disable repair button if everything is already healthy
+        if not self.degraded:
+            self.repair_button.disabled = True
+            self.repair_button.label = "All Clans Healthy ✅"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.staff_id:
+            await interaction.response.send_message("❌ Only the staff member who initiated this audit can interact.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="🔧 Repair Missing Roles & Channels", style=discord.ButtonStyle.primary, custom_id="clan_repair_execute")
+    async def repair_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if not guild:
+            return
+
+        repaired_summaries = []
+        async with get_db_session() as session:
+            for item in self.degraded:
+                try:
+                    summary = await execute_clan_repair(session, guild, item)
+                    repaired_summaries.append((item["clan"].name, summary))
+                except Exception as e:
+                    logger.error(f"Failed to repair clan {item['clan'].name}: {e}")
+
+            # Re-audit to update embed
+            updated_audit = []
+            for item in self.audit_results:
+                fresh_audit = await audit_clan_health(session, guild, item["clan"])
+                updated_audit.append(fresh_audit)
+
+        # Update view
+        self.repair_button.disabled = True
+        self.repair_button.label = "Repaired ✅"
+        for child in self.children:
+            child.disabled = True
+
+        updated_embed = build_repair_audit_embed(guild, updated_audit)
+        await interaction.edit_original_response(embed=updated_embed, view=self)
+
+        # Report detailed repair log
+        lines = []
+        for cname, s in repaired_summaries:
+            lines.append(f"• **{cname}**: Created {s['roles_created']} Role(s), Text: {'✅' if s['text_created'] else 'Already exists'}, Voice: {'✅' if s['voice_created'] else 'Already exists'}, Owner Assigned: {'✅' if s['owner_assigned'] else 'OK'}")
+
+        report = "🎉 **Clan Repair Complete!**\n" + ("\n".join(lines) if lines else "No changes required.")
+        await interaction.followup.send(report, ephemeral=True)
+
+    @discord.ui.button(label="❌ Dismiss", style=discord.ButtonStyle.secondary, custom_id="clan_repair_cancel")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+
 
 class Clans(commands.Cog):
     def __init__(self, bot: commands.Bot):
