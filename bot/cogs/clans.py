@@ -1774,12 +1774,34 @@ class ClanGroup(app_commands.Group):
                 await interaction.followup.send(f"❌ Could not find the Discord role matching '{target_role.role_name}'.", ephemeral=True)
                 return
                 
-            # 3. Fetch text & voice channels
+            # 3. Fetch text & voice channels with dynamic fallback
             text_channel = interaction.guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
+            if not text_channel:
+                expected_tname = f"💬-{clan.name.lower().replace(' ', '-')}"
+                text_channel = discord.utils.get(interaction.guild.text_channels, name=expected_tname)
+                if not text_channel:
+                    text_channel = next((c for c in interaction.guild.text_channels if clan.name.lower() in c.name.lower()), None)
+                if text_channel:
+                    clan.discord_text_channel_id = text_channel.id
+
             voice_channel = interaction.guild.get_channel(clan.discord_voice_channel_id) if clan.discord_voice_channel_id else None
+            if not voice_channel:
+                expected_vname = f"🔊-{clan.name.lower().replace(' ', '-')}"
+                voice_channel = discord.utils.get(interaction.guild.voice_channels, name=expected_vname)
+                if not voice_channel:
+                    voice_channel = next((c for c in interaction.guild.voice_channels if clan.name.lower() in c.name.lower()), None)
+                if voice_channel:
+                    clan.discord_voice_channel_id = voice_channel.id
+
+            if text_channel or voice_channel:
+                await session.commit()
             
             if not text_channel and not voice_channel:
-                await interaction.followup.send("❌ There are no private channels set up for this clan.", ephemeral=True)
+                await interaction.followup.send(
+                    "❌ No private channels are currently set up or linked to your clan.\n"
+                    "💡 **Fix:** Ask a server administrator or staff member to run `/clan repair` to generate or link your clan channels!",
+                    ephemeral=True
+                )
                 return
                 
             # Apply overrides
@@ -1848,11 +1870,34 @@ class ClanGroup(app_commands.Group):
             roles_res = await session.execute(select(ClanRole).filter_by(clan_id=clan.id).order_by(ClanRole.hierarchy_level.desc()))
             clan_roles = list(roles_res.scalars())
 
+            # Dynamic channel lookup with fallback & self-healing
             text_channel = guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
+            if not text_channel:
+                expected_tname = f"💬-{clan.name.lower().replace(' ', '-')}"
+                text_channel = discord.utils.get(guild.text_channels, name=expected_tname)
+                if not text_channel:
+                    text_channel = next((c for c in guild.text_channels if clan.name.lower() in c.name.lower()), None)
+                if text_channel:
+                    clan.discord_text_channel_id = text_channel.id
+
             voice_channel = guild.get_channel(clan.discord_voice_channel_id) if clan.discord_voice_channel_id else None
+            if not voice_channel:
+                expected_vname = f"🔊-{clan.name.lower().replace(' ', '-')}"
+                voice_channel = discord.utils.get(guild.voice_channels, name=expected_vname)
+                if not voice_channel:
+                    voice_channel = next((c for c in guild.voice_channels if clan.name.lower() in c.name.lower()), None)
+                if voice_channel:
+                    clan.discord_voice_channel_id = voice_channel.id
+
+            if text_channel or voice_channel:
+                await session.commit()
 
             if not text_channel and not voice_channel:
-                await interaction.followup.send("❌ No private channels are set up for your clan.", ephemeral=True)
+                await interaction.followup.send(
+                    "❌ No private channels are currently set up or linked to your clan.\n"
+                    "💡 **Fix:** Ask a server administrator or staff member to run `/clan repair` to generate or link your clan channels!",
+                    ephemeral=True
+                )
                 return
 
             embed = discord.Embed(
