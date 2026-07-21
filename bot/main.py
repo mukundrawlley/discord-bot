@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import logging
 import asyncio
@@ -56,9 +57,9 @@ class JourneyBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         # Start background health server for Railway/Heroku port pings
-        self.loop.create_task(start_health_server())
+        asyncio.create_task(start_health_server())
 
-        # Register global interaction check to restrict all commands to servers where the bot is authorized
+        # 1. Register Global Interaction Check
         async def global_interaction_check(interaction: discord.Interaction) -> bool:
             if interaction.guild_id is None:
                 if not interaction.response.is_done():
@@ -71,18 +72,40 @@ class JourneyBot(commands.Bot):
             
         self.tree.interaction_check = global_interaction_check
 
-        # Global App Command Error Handler to prevent forever "Journey is thinking..." states
+        # 2. Register Global App Command Error Handler
         async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-            logger.error(f"Slash command exception on '{interaction.command}': {error}", exc_info=error)
-            msg = "❌ An unexpected error occurred while executing this command."
+            original_error = getattr(error, 'original', error)
+
+            if isinstance(error, app_commands.CommandOnCooldown):
+                msg = f"⏳ This command is on cooldown. Try again in `{error.retry_after:.1f}s`."
+            elif isinstance(error, app_commands.MissingPermissions):
+                missing = ", ".join(f"`{p}`" for p in error.missing_permissions)
+                msg = f"❌ You lack the required permission(s) to run this command: {missing}"
+            elif isinstance(error, app_commands.BotMissingPermissions):
+                missing = ", ".join(f"`{p}`" for p in error.missing_permissions)
+                msg = f"❌ The bot lacks the required permission(s) to execute this command: {missing}"
+            elif isinstance(error, app_commands.CheckFailure):
+                msg = "❌ You do not meet the requirements to run this command."
+            elif isinstance(error, app_commands.TransformerError):
+                msg = f"❌ Invalid argument provided: {error}"
+            elif isinstance(original_error, discord.HTTPException):
+                msg = f"❌ Discord API error occurred: `{original_error.text if hasattr(original_error, 'text') else original_error}`"
+                logger.error(f"HTTPException in command '{interaction.command}': {original_error}", exc_info=original_error)
+            elif isinstance(error, app_commands.CommandInvokeError):
+                msg = "❌ An error occurred while executing this command."
+                logger.error(f"CommandInvokeError in '{interaction.command}': {original_error}", exc_info=original_error)
+            else:
+                msg = "❌ An unexpected error occurred while executing this command."
+                logger.error(f"Unhandled app command error in '{interaction.command}': {error}", exc_info=error)
+
             try:
                 if interaction.response.is_done():
                     await interaction.followup.send(msg, ephemeral=True)
                 else:
                     await interaction.response.send_message(msg, ephemeral=True)
-            except Exception:
-                pass
-                
+            except Exception as send_err:
+                logger.error(f"Failed to send error response to user: {send_err}")
+
         self.tree.on_error = on_tree_error
 
         # Initialize Playwright browser cache
