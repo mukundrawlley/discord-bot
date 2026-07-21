@@ -2633,33 +2633,40 @@ class ClanGroup(app_commands.Group):
                             
         await interaction.response.send_message(f"💥 Clan **{clan_name}** has been forcibly disbanded by staff.")
 
-    @app_commands.command(name="repair", description="Audits & repairs missing roles/channels for approved clans (Staff Only).")
-    @app_commands.describe(name="Optional: Target a specific clan to repair (leave blank for all approved clans).")
+    @app_commands.command(name="repair", description="Audits & repairs missing roles/channels for approved clans.")
+    @app_commands.describe(name="Optional: Target a specific clan to repair (leave blank for your clan or all approved clans for staff).")
     async def clan_repair(self, interaction: discord.Interaction, name: str | None = None) -> None:
-        """Staff command to audit and repair missing roles/channels for approved clans."""
+        """Audits and repairs missing roles/channels for approved clans (usable by Staff and Clan Leaders)."""
         if interaction.guild_id is None or interaction.guild is None:
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
-            return
-
-        perms = interaction.user.guild_permissions
-        is_staff = perms.administrator or perms.manage_guild or perms.manage_roles or (interaction.guild.owner_id == interaction.user.id)
-        if not is_staff:
-            await interaction.response.send_message("❌ Only server administrators or staff can run clan repairs.", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
         async with get_db_session() as session:
+            exec_member = await get_member_membership(session, guild.id, interaction.user.id)
+            is_clan_leader = bool(exec_member and exec_member.clan and exec_member.clan.owner_id == interaction.user.id)
+
+            perms = interaction.user.guild_permissions
+            is_staff = perms.administrator or perms.manage_guild or perms.manage_roles or (guild.owner_id == interaction.user.id)
+
+            if not is_staff and not is_clan_leader:
+                await interaction.followup.send("❌ Only Server Staff or Clan Leaders can run clan repairs.", ephemeral=True)
+                return
+
             query = select(Clan).filter_by(guild_id=guild.id, approved=True)
-            if name:
+
+            if not is_staff and is_clan_leader:
+                query = query.filter_by(id=exec_member.clan.id)
+            elif name:
                 query = query.filter(Clan.name.ilike(name))
 
             clans_res = await session.execute(query)
             clans = list(clans_res.scalars())
 
             if not clans:
-                msg = f"❌ No approved clan found matching '{name}'." if name else "❌ No approved clans found in this server."
+                msg = f"❌ No approved clan found matching '{name}'." if name else "❌ No approved clans found for repair."
                 await interaction.followup.send(msg, ephemeral=True)
                 return
 

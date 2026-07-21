@@ -60,23 +60,13 @@ class JourneyBot(commands.Bot):
 
         # Register global interaction check to restrict all commands to servers where the bot is authorized
         async def global_interaction_check(interaction: discord.Interaction) -> bool:
-            if interaction.guild_id is not None:
-                if interaction.guild is None and interaction.client.get_guild(interaction.guild_id) is None:
-                    if not interaction.response.is_done():
-                        await interaction.response.send_message(
-                            "❌ This command can only be used in servers where the bot is authorized/installed.",
-                            ephemeral=True
-                        )
-                    return False
-            else:
-                # Block execution in DMs/Group DMs
+            if interaction.guild_id is None:
                 if not interaction.response.is_done():
                     await interaction.response.send_message(
                         "❌ This command requires a server context where the bot is authorized/installed.",
                         ephemeral=True
                     )
                 return False
-                
             return True
             
         self.tree.interaction_check = global_interaction_check
