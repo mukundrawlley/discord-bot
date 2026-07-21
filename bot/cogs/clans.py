@@ -1826,6 +1826,114 @@ class ClanGroup(app_commands.Group):
         )
         await interaction.followup.send(status_msg, ephemeral=True)
 
+    @channel_group.command(name="permissions", description="Displays role and member access permissions for your clan's channels.")
+    async def channel_permissions(self, interaction: discord.Interaction) -> None:
+        """Displays who can view and send messages in the clan's private channels."""
+        if interaction.guild_id is None or interaction.guild is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        async with get_db_session() as session:
+            exec_member = await get_member_membership(session, guild.id, interaction.user.id)
+            if not exec_member:
+                await interaction.followup.send("❌ You are not in a clan.", ephemeral=True)
+                return
+
+            clan = exec_member.clan
+
+            # Fetch clan roles from DB
+            roles_res = await session.execute(select(ClanRole).filter_by(clan_id=clan.id).order_by(ClanRole.hierarchy_level.desc()))
+            clan_roles = list(roles_res.scalars())
+
+            text_channel = guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
+            voice_channel = guild.get_channel(clan.discord_voice_channel_id) if clan.discord_voice_channel_id else None
+
+            if not text_channel and not voice_channel:
+                await interaction.followup.send("❌ No private channels are set up for your clan.", ephemeral=True)
+                return
+
+            embed = discord.Embed(
+                title=f"🔒 Channel Access & Permissions — {clan.name}",
+                description="Overview of roles and members with access to your clan's private channels.",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+
+            # Text Channel Analysis
+            if text_channel:
+                text_view_allowed = []
+                text_msg_allowed = []
+                text_denied = []
+
+                # Default role
+                def_overwrite = text_channel.overwrites_for(guild.default_role)
+                if def_overwrite.view_channel is False:
+                    text_denied.append("• `@everyone` (Server Default)")
+
+                for crole in clan_roles:
+                    if not crole.discord_role_id:
+                        continue
+                    d_role = guild.get_role(crole.discord_role_id)
+                    if not d_role:
+                        continue
+
+                    ow = text_channel.overwrites_for(d_role)
+                    can_v = ow.view_channel is True or (ow.view_channel is None and d_role.permissions.administrator)
+                    can_m = ow.send_messages is True or (ow.send_messages is None and d_role.permissions.administrator)
+
+                    if can_v:
+                        text_view_allowed.append(f"• **{crole.role_name}** ({d_role.mention})")
+                    else:
+                        text_denied.append(f"• **{crole.role_name}** ({d_role.mention})")
+
+                    if can_m:
+                        text_msg_allowed.append(f"• **{crole.role_name}** ({d_role.mention})")
+
+                text_val = (
+                    f"**Channel:** {text_channel.mention}\n\n"
+                    f"👁️ **Can View & Read Messages:**\n" + ("\n".join(text_view_allowed) if text_view_allowed else "None") + "\n\n"
+                    f"💬 **Can Send Messages:**\n" + ("\n".join(text_msg_allowed) if text_msg_allowed else "None") + "\n\n"
+                    f"🚫 **Access Denied / Hidden:**\n" + ("\n".join(text_denied) if text_denied else "None")
+                )
+                embed.add_field(name="💬 Text Channel Access", value=text_val, inline=False)
+
+            # Voice Channel Analysis
+            if voice_channel:
+                voice_connect_allowed = []
+                voice_denied = []
+
+                def_v_overwrite = voice_channel.overwrites_for(guild.default_role)
+                if def_v_overwrite.view_channel is False or def_v_overwrite.connect is False:
+                    voice_denied.append("• `@everyone` (Server Default)")
+
+                for crole in clan_roles:
+                    if not crole.discord_role_id:
+                        continue
+                    d_role = guild.get_role(crole.discord_role_id)
+                    if not d_role:
+                        continue
+
+                    ow = voice_channel.overwrites_for(d_role)
+                    can_c = (ow.view_channel is True and ow.connect is not False) or d_role.permissions.administrator
+
+                    if can_c:
+                        voice_connect_allowed.append(f"• **{crole.role_name}** ({d_role.mention})")
+                    else:
+                        voice_denied.append(f"• **{crole.role_name}** ({d_role.mention})")
+
+                voice_val = (
+                    f"**Channel:** {voice_channel.mention}\n\n"
+                    f"🔊 **Can View & Connect:**\n" + ("\n".join(voice_connect_allowed) if voice_connect_allowed else "None") + "\n\n"
+                    f"🚫 **Access Denied:**\n" + ("\n".join(voice_denied) if voice_denied else "None")
+                )
+                embed.add_field(name="🔊 Voice Channel Access", value=voice_val, inline=False)
+
+            embed.set_footer(text="Leaders can modify permissions for custom roles using /clan channel access.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
     # ==============================================================================
     # ONBOARDING SETUP COMMANDS GROUP
     # ==============================================================================
