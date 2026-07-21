@@ -2333,7 +2333,19 @@ class ClanGroup(app_commands.Group):
             else:
                 members_list.append(f"{idx+1}. <@{m.user_id}>{role_suffix}")
             
-        members_str = "\n".join(members_list) if members_list else "*No members.*"
+        displayed_lines = []
+        current_len = 0
+        total_members = len(members_list)
+        for idx, entry in enumerate(members_list):
+            remaining = total_members - idx
+            suffix = f"\n*...and {remaining} more members*"
+            if current_len + len(entry) + len(suffix) > 950:
+                displayed_lines.append(f"*...and {remaining} more members*")
+                break
+            displayed_lines.append(entry)
+            current_len += len(entry) + 1
+
+        members_str = "\n".join(displayed_lines) if displayed_lines else "*No members.*"
         embed.add_field(name=f"👥 Members ({len(members)})", value=members_str, inline=False)
         
         await interaction.followup.send(embed=embed)
