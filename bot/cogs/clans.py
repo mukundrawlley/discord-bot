@@ -2536,6 +2536,18 @@ async def audit_clan_health(session: AsyncSession, guild: discord.Guild, clan: C
     if not member_d_role:
         member_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Member")
 
+    # Onboarding Applicant Role
+    from bot.models.clan import ClanOnboarding
+    onboarding_res = await session.execute(
+        select(ClanOnboarding).filter_by(guild_id=guild.id, clan_id=clan.id)
+    )
+    onboarding_mapping = onboarding_res.scalar_one_or_none()
+    onboarding_d_role = None
+    if onboarding_mapping and onboarding_mapping.discord_role_id:
+        onboarding_d_role = guild.get_role(onboarding_mapping.discord_role_id)
+    if not onboarding_d_role:
+        onboarding_d_role = discord.utils.get(guild.roles, name=f"{clan.name} Applicant")
+
     owner_member = guild.get_member(clan.owner_id)
     owner_has_role = bool(owner_member and leader_d_role and leader_d_role in owner_member.roles)
 
@@ -2552,6 +2564,7 @@ async def audit_clan_health(session: AsyncSession, guild: discord.Guild, clan: C
     needs_repair = (
         not leader_d_role or
         not member_d_role or
+        not onboarding_d_role or
         not owner_has_role or
         not text_chan or
         not voice_chan
@@ -2563,6 +2576,8 @@ async def audit_clan_health(session: AsyncSession, guild: discord.Guild, clan: C
         "member_db_role": member_db_role,
         "leader_d_role": leader_d_role,
         "member_d_role": member_d_role,
+        "onboarding_mapping": onboarding_mapping,
+        "onboarding_d_role": onboarding_d_role,
         "owner_has_role": owner_has_role,
         "text_chan": text_chan,
         "voice_chan": voice_chan,
@@ -2599,6 +2614,30 @@ async def execute_clan_repair(
             reason="Journey Clan Repair: Missing Member role."
         )
         summary["roles_created"] += 1
+
+    # Onboarding Applicant Role
+    from bot.models.clan import ClanOnboarding
+    onboarding_d_role = audit_data["onboarding_d_role"]
+    if not onboarding_d_role:
+        onboarding_d_role = await guild.create_role(
+            name=f"{clan.name} Applicant",
+            color=discord.Color.light_grey(),
+            reason="Journey Clan Repair: Missing Onboarding Applicant role."
+        )
+        summary["roles_created"] += 1
+
+    onboarding_mapping = audit_data["onboarding_mapping"]
+    if not onboarding_mapping:
+        onboarding_mapping = ClanOnboarding(
+            guild_id=guild.id,
+            clan_id=clan.id,
+            discord_role_id=onboarding_d_role.id,
+            enabled=True
+        )
+        session.add(onboarding_mapping)
+    else:
+        onboarding_mapping.discord_role_id = onboarding_d_role.id
+        onboarding_mapping.enabled = True
 
     # DB ClanRole records
     leader_db_role = audit_data["leader_db_role"]
@@ -2718,6 +2757,7 @@ def build_repair_audit_embed(guild: discord.Guild, audit_results: list[dict]) ->
         clan = item["clan"]
         leader_r = "🟢" if item["leader_d_role"] else "🔴 Missing"
         member_r = "🟢" if item["member_d_role"] else "🔴 Missing"
+        applicant_r = "🟢" if item["onboarding_d_role"] else "🔴 Missing"
         owner_r = "🟢" if item["owner_has_role"] else "🔴 Missing"
         text_c = "🟢" if item["text_chan"] else "🔴 Missing"
         voice_c = "🟢" if item["voice_chan"] else "🔴 Missing"
@@ -2726,7 +2766,7 @@ def build_repair_audit_embed(guild: discord.Guild, audit_results: list[dict]) ->
 
         val = (
             f"**Status:** {status}\n"
-            f"• **Leader Role:** {leader_r} | **Member Role:** {member_r}\n"
+            f"• **Leader Role:** {leader_r} | **Member Role:** {member_r} | **Applicant Role:** {applicant_r}\n"
             f"• **Owner Assigned:** {owner_r}\n"
             f"• **Text Channel:** {text_c} | **Voice Channel:** {voice_c}"
         )
