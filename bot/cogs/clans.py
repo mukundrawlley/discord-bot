@@ -1801,14 +1801,36 @@ class ClanGroup(app_commands.Group):
                 await interaction.followup.send(f"❌ Role '{role_name}' not found in your clan.", ephemeral=True)
                 return
                 
-            if not target_role.discord_role_id:
-                await interaction.followup.send(f"❌ The role '{target_role.role_name}' is not linked to any Discord role.", ephemeral=True)
-                return
-                
-            discord_role = interaction.guild.get_role(target_role.discord_role_id)
+            discord_role = interaction.guild.get_role(target_role.discord_role_id) if target_role.discord_role_id else None
             if not discord_role:
-                await interaction.followup.send(f"❌ Could not find the Discord role matching '{target_role.role_name}'.", ephemeral=True)
-                return
+                # Dynamic self-healing role lookup & creation
+                discord_role = discord.utils.get(interaction.guild.roles, name=target_role.role_name)
+                if not discord_role:
+                    discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} {target_role.role_name}")
+                if not discord_role and target_role.hierarchy_level == 100:
+                    discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} Leader")
+                if not discord_role and target_role.hierarchy_level == 1:
+                    discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} Member")
+
+                if not discord_role:
+                    role_color = parse_color(target_role.color) if target_role.color else discord.Color.blue()
+                    try:
+                        discord_role = await interaction.guild.create_role(
+                            name=target_role.role_name,
+                            color=role_color,
+                            reason="Journey Clan Channel Access: Created missing role on Discord"
+                        )
+                    except discord.Forbidden:
+                        await interaction.followup.send("❌ Journey Bot lacks 'Manage Roles' permission to create/link Discord roles.", ephemeral=True)
+                        return
+
+                target_role.discord_role_id = discord_role.id
+                if discord_role.name != target_role.role_name:
+                    try:
+                        await discord_role.edit(name=target_role.role_name, reason="Journey Clan Channel Access: Rename role to match exact name.")
+                    except discord.Forbidden:
+                        pass
+                await session.commit()
                 
             # 3. Fetch text & voice channels with dynamic fallback
             text_channel = interaction.guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
@@ -2916,6 +2938,10 @@ async def execute_clan_repair(
             await sync_discord_roles(guild, m.user_id, m.role_id, db_roles)
         except Exception:
             pass
+
+    owner_discord_member = guild.get_member(clan.owner_id)
+    if owner_discord_member and leader_d_role and leader_d_role not in owner_discord_member.roles:
+        try:
             await owner_discord_member.add_roles(leader_d_role, reason="Journey Clan Repair: Owner role assignment.")
             summary["owner_assigned"] = True
         except discord.Forbidden:
@@ -2931,8 +2957,6 @@ async def execute_clan_repair(
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        member_d_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-        leader_d_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True),
         guild.me.top_role: discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True)
     }
 
@@ -2958,6 +2982,32 @@ async def execute_clan_repair(
         )
         summary["voice_created"] = True
     clan.discord_voice_channel_id = voice_chan.id
+
+    # Grant text & voice channel access to ALL custom roles in the clan
+    for r in db_roles:
+        d_r = guild.get_role(r.discord_role_id) if r.discord_role_id else None
+        if d_r:
+            is_leader = r.hierarchy_level == 100
+            try:
+                if text_chan:
+                    await text_chan.set_permissions(
+                        d_r,
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True,
+                        manage_messages=is_leader,
+                        reason="Journey Clan Repair: Grant text channel access to clan role"
+                    )
+                if voice_chan:
+                    await voice_chan.set_permissions(
+                        d_r,
+                        view_channel=True,
+                        connect=True,
+                        speak=True,
+                        reason="Journey Clan Repair: Grant voice channel access to clan role"
+                    )
+            except discord.Forbidden:
+                pass
 
     await write_audit_log(session, clan.id, guild.owner_id, "clan_repaired")
     await session.commit()
