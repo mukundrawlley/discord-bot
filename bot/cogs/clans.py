@@ -2189,6 +2189,7 @@ class ClanGroup(app_commands.Group):
             await interaction.response.send_message("❌ Clan commands can only be used inside a server context.", ephemeral=True)
             return
 
+        await interaction.response.defer()
         guild_id = interaction.guild_id
         
         async with get_db_session() as session:
@@ -2199,7 +2200,7 @@ class ClanGroup(app_commands.Group):
                 if exec_member:
                     clan = exec_member.clan
                 else:
-                    await interaction.response.send_message("❌ You are not currently in a clan. Use `/clan create` to register one!", ephemeral=True)
+                    await interaction.followup.send("❌ You are not currently in a clan. Use `/clan create` to register one!", ephemeral=True)
                     return
             else:
                 # Check user mention/id first
@@ -2220,7 +2221,7 @@ class ClanGroup(app_commands.Group):
                     if target_member:
                         clan = target_member.clan
                     else:
-                        await interaction.response.send_message("❌ That user is not in a clan.", ephemeral=True)
+                        await interaction.followup.send("❌ That user is not in a clan.", ephemeral=True)
                         return
                 else:
                     # Search by name
@@ -2229,7 +2230,7 @@ class ClanGroup(app_commands.Group):
                     )
                     clan = clan_result.scalars().first()
                     if not clan:
-                        await interaction.response.send_message(f"❌ No clan found with name '{target}'.", ephemeral=True)
+                        await interaction.followup.send(f"❌ No clan found with name '{target}'.", ephemeral=True)
                         return
 
             # Eager load members sorted by hierarchy level
@@ -2249,55 +2250,45 @@ class ClanGroup(app_commands.Group):
         # Resolve names using gateway queries to avoid HTTP REST API rate limit bans
         import asyncio
         resolved_members = []
-        if interaction.guild:
-            uncached_ids = [uid for uid in [clan.owner_id] + [m.user_id for m in members] if not interaction.guild.get_member(uid)]
-            if uncached_ids:
-                try:
-                    # Gateway lazy-member chunks returns the list of Member objects directly
-                    resolved_members = await asyncio.wait_for(
-                        interaction.guild.query_members(user_ids=uncached_ids, cache=True),
-                        timeout=1.5
-                    )
-                except Exception:
-                    pass
-
-        # Build a helper map of user IDs to names
         name_map = {}
-        if interaction.guild:
-            for uid in [clan.owner_id] + [m.user_id for m in members]:
-                m_obj = interaction.guild.get_member(uid)
-                if m_obj:
-                    name_map[uid] = m_obj.display_name
-            # Merge members resolved via gateway query
-            for m_obj in resolved_members:
-                name_map[m_obj.id] = m_obj.display_name
+        try:
+            if interaction.guild:
+                uncached_ids = [uid for uid in [clan.owner_id] + [m.user_id for m in members] if not interaction.guild.get_member(uid)]
+                if uncached_ids:
+                    try:
+                        resolved_members = await asyncio.wait_for(
+                            interaction.guild.query_members(user_ids=uncached_ids, cache=True),
+                            timeout=1.5
+                        )
+                    except Exception:
+                        pass
 
-        # If any members are still uncached, fetch them in parallel ONLY if there are 5 or fewer to avoid rate limits
-        uncached_remaining = [uid for uid in [clan.owner_id] + [m.user_id for m in members] if uid not in name_map]
-        if uncached_remaining and len(uncached_remaining) <= 5:
-            async def fetch_and_cache(uid: int):
-                try:
-                    user_obj = await interaction.client.fetch_user(uid)
-                    name_map[uid] = user_obj.display_name
-                except Exception:
-                    pass
-            await asyncio.gather(*[fetch_and_cache(uid) for uid in uncached_remaining])
+                for uid in [clan.owner_id] + [m.user_id for m in members]:
+                    m_obj = interaction.guild.get_member(uid)
+                    if m_obj:
+                        name_map[uid] = m_obj.display_name
+                for m_obj in resolved_members:
+                    name_map[m_obj.id] = m_obj.display_name
+
+            uncached_remaining = [uid for uid in [clan.owner_id] + [m.user_id for m in members] if uid not in name_map]
+            if uncached_remaining and len(uncached_remaining) <= 5:
+                async def fetch_and_cache(uid: int):
+                    try:
+                        user_obj = await interaction.client.fetch_user(uid)
+                        name_map[uid] = user_obj.display_name
+                    except Exception:
+                        pass
+                await asyncio.gather(*[fetch_and_cache(uid) for uid in uncached_remaining])
+        except Exception as e:
+            logger.warning(f"Member name resolution non-fatal warning in clan_info: {e}")
 
         leader_name = name_map.get(clan.owner_id)
         if not leader_name:
-            leader_user = interaction.client.get_user(clan.owner_id)
+            leader_user = interaction.client.get_user(clan.owner_id) if interaction.client else None
             if leader_user:
                 leader_name = leader_user.display_name
             else:
                 leader_name = f"ID: {clan.owner_id}"
-
-        # Fallback to single HTTP fetch for leader only if still uncached
-        if leader_name.startswith("ID:") and interaction.client:
-            try:
-                leader_user = await interaction.client.fetch_user(clan.owner_id)
-                leader_name = leader_user.display_name
-            except Exception:
-                pass
 
         embed = discord.Embed(
             title=f"🛡️ Clan: {clan.name} " + ("" if clan.approved else "(Pending Approval ⏳)"),
@@ -2313,7 +2304,7 @@ class ClanGroup(app_commands.Group):
         members_list = []
         for idx, m in enumerate(members):
             name = name_map.get(m.user_id)
-            if not name:
+            if not name and interaction.client:
                 user_obj = interaction.client.get_user(m.user_id)
                 if user_obj:
                     name = user_obj.display_name
@@ -2333,7 +2324,7 @@ class ClanGroup(app_commands.Group):
         members_str = "\n".join(members_list) if members_list else "*No members.*"
         embed.add_field(name=f"👥 Members ({len(members)})", value=members_str, inline=False)
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="description", description="Updates your clan's description.")
     @app_commands.describe(text="The new description (max 256 characters, or leave blank to clear).")
