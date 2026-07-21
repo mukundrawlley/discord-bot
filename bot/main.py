@@ -61,18 +61,20 @@ class JourneyBot(commands.Bot):
         # Register global interaction check to restrict all commands to servers where the bot is authorized
         async def global_interaction_check(interaction: discord.Interaction) -> bool:
             if interaction.guild_id is not None:
-                if interaction.client.get_guild(interaction.guild_id) is None:
-                    await interaction.response.send_message(
-                        "❌ This command can only be used in servers where the bot is authorized/installed.",
-                        ephemeral=True
-                    )
+                if interaction.guild is None and interaction.client.get_guild(interaction.guild_id) is None:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(
+                            "❌ This command can only be used in servers where the bot is authorized/installed.",
+                            ephemeral=True
+                        )
                     return False
             else:
                 # Block execution in DMs/Group DMs
-                await interaction.response.send_message(
-                    "❌ This command requires a server context where the bot is authorized/installed.",
-                    ephemeral=True
-                )
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "❌ This command requires a server context where the bot is authorized/installed.",
+                        ephemeral=True
+                    )
                 return False
                 
             return True
@@ -413,15 +415,12 @@ async def sync_commands(ctx: commands.Context):
         await ctx.send("❌ You do not have permission to sync commands.")
         return
         
-    await ctx.send("⏳ Syncing slash commands...")
+    await ctx.send("⏳ Syncing slash commands for this server...")
     try:
         # Copy global commands to this server for instant activation
         bot.tree.copy_global_to(guild=ctx.guild)
         local_synced = await bot.tree.sync(guild=ctx.guild)
         await ctx.send(f"✅ Synced {len(local_synced)} commands locally to this server for instant activation!")
-        
-        # Also refresh global registry
-        await bot.tree.sync()
     except Exception as e:
         await ctx.send(f"❌ Failed to sync commands: `{e}`")
         logger.error("Command sync failed", exc_info=e)
