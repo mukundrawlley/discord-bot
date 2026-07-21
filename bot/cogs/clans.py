@@ -429,6 +429,14 @@ class RoleManagerView(discord.ui.View):
         edit_btn.callback = self.edit_callback
         self.add_item(edit_btn)
         
+        move_up_btn = discord.ui.Button(label="⬆️ Move Up", style=discord.ButtonStyle.secondary, custom_id="clan_role_up", disabled=self.selected_role_id is None)
+        move_up_btn.callback = self.move_up_callback
+        self.add_item(move_up_btn)
+
+        move_down_btn = discord.ui.Button(label="⬇️ Move Down", style=discord.ButtonStyle.secondary, custom_id="clan_role_down", disabled=self.selected_role_id is None)
+        move_down_btn.callback = self.move_down_callback
+        self.add_item(move_down_btn)
+
         delete_btn = discord.ui.Button(label="🗑️ Delete Role", style=discord.ButtonStyle.danger, custom_id="clan_role_delete", disabled=self.selected_role_id is None)
         delete_btn.callback = self.delete_callback
         self.add_item(delete_btn)
@@ -500,6 +508,70 @@ class RoleManagerView(discord.ui.View):
             title="👑 Ranks Editor",
             description="Role deleted successfully. Select another role to manage.",
             color=discord.Color.blue()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def move_up_callback(self, interaction: discord.Interaction):
+        selected_role = next(r for r in self.roles if r.id == self.selected_role_id)
+        sorted_roles = sorted(self.roles, key=lambda r: r.hierarchy_level)
+        idx = sorted_roles.index(selected_role)
+        if idx >= len(sorted_roles) - 1:
+            await interaction.response.send_message("❌ Role is already at the top position.", ephemeral=True)
+            return
+
+        other_role = sorted_roles[idx + 1]
+        async with get_db_session() as session:
+            r1 = (await session.execute(select(ClanRole).filter_by(id=selected_role.id))).scalar_one()
+            r2 = (await session.execute(select(ClanRole).filter_by(id=other_role.id))).scalar_one()
+            r1.hierarchy_level, r2.hierarchy_level = r2.hierarchy_level, r1.hierarchy_level
+            selected_role.hierarchy_level, other_role.hierarchy_level = r1.hierarchy_level, r2.hierarchy_level
+            await session.commit()
+
+        if selected_role.discord_role_id and interaction.guild:
+            d_role = interaction.guild.get_role(selected_role.discord_role_id)
+            if d_role:
+                try:
+                    await d_role.edit(position=d_role.position + 1, reason="Journey Clan Role Reorder")
+                except discord.Forbidden:
+                    pass
+
+        self.update_select_menu()
+        embed = discord.Embed(
+            title=f"👑 Ranks Editor - Position Updated",
+            description=f"Moved **{selected_role.role_name}** above **{other_role.role_name}**.",
+            color=discord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def move_down_callback(self, interaction: discord.Interaction):
+        selected_role = next(r for r in self.roles if r.id == self.selected_role_id)
+        sorted_roles = sorted(self.roles, key=lambda r: r.hierarchy_level)
+        idx = sorted_roles.index(selected_role)
+        if idx <= 0:
+            await interaction.response.send_message("❌ Role is already at the bottom position.", ephemeral=True)
+            return
+
+        other_role = sorted_roles[idx - 1]
+        async with get_db_session() as session:
+            r1 = (await session.execute(select(ClanRole).filter_by(id=selected_role.id))).scalar_one()
+            r2 = (await session.execute(select(ClanRole).filter_by(id=other_role.id))).scalar_one()
+            r1.hierarchy_level, r2.hierarchy_level = r2.hierarchy_level, r1.hierarchy_level
+            selected_role.hierarchy_level, other_role.hierarchy_level = r1.hierarchy_level, r2.hierarchy_level
+            await session.commit()
+
+        if selected_role.discord_role_id and interaction.guild:
+            d_role = interaction.guild.get_role(selected_role.discord_role_id)
+            if d_role:
+                try:
+                    await d_role.edit(position=max(1, d_role.position - 1), reason="Journey Clan Role Reorder")
+                except discord.Forbidden:
+                    pass
+
+        self.update_select_menu()
+        embed = discord.Embed(
+            title=f"👑 Ranks Editor - Position Updated",
+            description=f"Moved **{selected_role.role_name}** below **{other_role.role_name}**.",
+            color=discord.Color.green()
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -2919,18 +2991,6 @@ async def execute_clan_repair(
                 except discord.Forbidden:
                     pass
 
-    # Position clan roles right below Journey Bot's top role
-    bot_top_pos = max(1, guild.me.top_role.position - 1)
-    db_roles_sorted = sorted(db_roles, key=lambda r: r.hierarchy_level, reverse=True)
-    for r in db_roles_sorted:
-        dr = guild.get_role(r.discord_role_id)
-        if dr:
-            try:
-                await dr.edit(position=bot_top_pos, reason="Journey Clan Repair: Position below Journey bot role")
-            except Exception:
-                pass
-            bot_top_pos = max(1, bot_top_pos - 1)
-
     # Assign correct Discord roles to ALL clan members
     members_res = await session.execute(select(ClanMember).filter_by(clan_id=clan.id))
     clan_members = list(members_res.scalars())
@@ -2984,7 +3044,7 @@ async def execute_clan_repair(
         summary["voice_created"] = True
     clan.discord_voice_channel_id = voice_chan.id
 
-    # Grant text & voice channel access to ALL custom roles in the clan
+    # Grant text & voice channel access and ping permissions to ALL custom roles in the clan
     for r in db_roles:
         d_r = guild.get_role(r.discord_role_id) if r.discord_role_id else None
         if d_r:
@@ -2996,8 +3056,9 @@ async def execute_clan_repair(
                         view_channel=True,
                         send_messages=True,
                         read_message_history=True,
+                        mention_everyone=True,
                         manage_messages=is_leader,
-                        reason="Journey Clan Repair: Grant text channel access to clan role"
+                        reason="Journey Clan Repair: Grant text channel access & pings to clan role"
                     )
                 if voice_chan:
                     await voice_chan.set_permissions(
