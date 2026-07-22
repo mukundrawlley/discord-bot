@@ -63,7 +63,7 @@ async def write_audit_log(session, clan_id: int, actor_id: int, action: str, old
     await session.flush()
 
 async def sync_discord_roles(guild: discord.Guild, member_id: int, correct_role_id: int | None, clan_roles: list[ClanRole]) -> None:
-    """Synchronizes a member's Discord roles to match their database clan role."""
+    """Synchronizes a member's Discord roles to match their database clan role, stripping all previous clan roles."""
     member = guild.get_member(member_id)
     if not member:
         return
@@ -73,26 +73,28 @@ async def sync_discord_roles(guild: discord.Guild, member_id: int, correct_role_
     correct_discord_role = None
     
     for r in clan_roles:
-        if not r.discord_role_id:
-            continue
-        d_role = guild.get_role(r.discord_role_id)
+        d_role = None
+        if r.discord_role_id:
+            d_role = guild.get_role(r.discord_role_id)
+        if not d_role:
+            d_role = discord.utils.get(guild.roles, name=r.role_name)
         if d_role:
             clan_discord_roles.append(d_role)
             if r.id == correct_role_id:
                 correct_discord_role = d_role
                 
-    # Add correct role, remove incorrect roles
-    roles_to_remove = [r for r in clan_discord_roles if r in member.roles and r != correct_discord_role]
+    # Add correct role, remove all other clan roles
+    roles_to_remove = [r for r in clan_discord_roles if r in member.roles and (not correct_discord_role or r.id != correct_discord_role.id)]
     roles_to_add = [correct_discord_role] if correct_discord_role and correct_discord_role not in member.roles else []
     
     if roles_to_remove:
         try:
-            await member.remove_roles(*roles_to_remove, reason="Journey Clan Role Sync")
+            await member.remove_roles(*roles_to_remove, reason="Journey Clan Role Sync - Strip Previous Clan Roles")
         except discord.Forbidden:
             logger.warning(f"Missing permissions to remove roles from {member.display_name}")
     if roles_to_add:
         try:
-            await member.add_roles(*roles_to_add, reason="Journey Clan Role Sync")
+            await member.add_roles(*roles_to_add, reason="Journey Clan Role Sync - Assign New Clan Role")
         except discord.Forbidden:
             logger.warning(f"Missing permissions to add role to {member.display_name}")
 
@@ -1788,16 +1790,12 @@ class ClanGroup(app_commands.Group):
             
         await interaction.response.send_message(f"📈 **{member.display_name}** has been promoted to **{next_role.role_name}**!")
 
-    @app_commands.command(name="demote", description="Demotes a member to the previous rank in the hierarchy.")
+    @app_commands.command(name="demote", description="Demotes a member (or leader) to the previous rank in the hierarchy.")
     @app_commands.describe(member="The member to demote.")
     async def clan_demote(self, interaction: discord.Interaction, member: discord.Member) -> None:
-        """Demotes a user inside the clan."""
-        if interaction.guild_id is None:
+        """Demotes a user inside the clan. Leaders demoting themselves transfer leadership to the next highest member."""
+        if interaction.guild_id is None or interaction.guild is None:
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
-            return
-            
-        if member.id == interaction.user.id:
-            await interaction.response.send_message("❌ You cannot demote yourself.", ephemeral=True)
             return
 
         guild_id = interaction.guild_id
@@ -1811,6 +1809,12 @@ class ClanGroup(app_commands.Group):
                 return
                 
             is_leader = exec_member.clan.owner_id == interaction.user.id
+            is_self_demotion = member.id == interaction.user.id
+
+            if is_self_demotion and not is_leader:
+                await interaction.response.send_message("❌ Only the Clan Leader can demote themselves.", ephemeral=True)
+                return
+
             can_demote = exec_member.role.permissions.can_demote if (exec_member.role and exec_member.role.permissions) else False
             
             if not is_leader and not can_demote:
@@ -1822,8 +1826,8 @@ class ClanGroup(app_commands.Group):
                 await interaction.response.send_message("❌ That member is not in your clan.", ephemeral=True)
                 return
                 
-            # Leader immunity
-            if target_member.clan.owner_id == member.id:
+            # If target is Leader but command executed by someone else
+            if target_member.clan.owner_id == member.id and not is_self_demotion:
                 await interaction.response.send_message("❌ You cannot demote the clan Leader.", ephemeral=True)
                 return
                 
@@ -1846,6 +1850,27 @@ class ClanGroup(app_commands.Group):
                     await interaction.response.send_message("❌ Your rank must be higher than the target's rank.", ephemeral=True)
                     return
 
+            leadership_transferred_to = None
+            leader_role = roles[-1]
+
+            # Handle Leader Self-Demotion
+            if is_self_demotion and is_leader:
+                other_members_res = await session.execute(
+                    select(ClanMember)
+                    .options(selectinload(ClanMember.role))
+                    .filter_by(clan_id=exec_member.clan_id)
+                    .filter(ClanMember.user_id != interaction.user.id)
+                )
+                other_members = list(other_members_res.scalars())
+                if other_members:
+                    other_members.sort(key=lambda m: m.role.hierarchy_level if m.role else 0, reverse=True)
+                    successor = other_members[0]
+                    successor.role_id = leader_role.id
+                    exec_member.clan.owner_id = successor.user_id
+                    leadership_transferred_to = interaction.guild.get_member(successor.user_id)
+                    
+                    await sync_discord_roles(interaction.guild, successor.user_id, leader_role.id, roles)
+
             # Execute demotion
             old_role_name = target_member.role.role_name
             target_member.role_id = prev_role.id
@@ -1861,10 +1886,16 @@ class ClanGroup(app_commands.Group):
             )
             await session.commit()
             
-            # Synchronize roles
+            # Synchronize roles (stripping old role and adding new one)
             await sync_discord_roles(interaction.guild, member.id, prev_role.id, roles)
             
-        await interaction.response.send_message(f"📉 **{member.display_name}** has been demoted to **{prev_role.role_name}**.")
+        if leadership_transferred_to:
+            await interaction.response.send_message(
+                f"📉 **{member.display_name}** has demoted themselves to **{prev_role.role_name}**!\n"
+                f"👑 Clan Leadership has been transferred to **{leadership_transferred_to.display_name}** ({leader_role.role_name})!"
+            )
+        else:
+            await interaction.response.send_message(f"📉 **{member.display_name}** has been demoted to **{prev_role.role_name}**.")
 
     @app_commands.command(name="invite", description="Invites a member to join your clan.")
     @app_commands.describe(member="The member you want to invite.")
