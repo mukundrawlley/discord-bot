@@ -2028,14 +2028,18 @@ class ClanGroup(app_commands.Group):
         view = PermissionsToggleView(interaction.user.id, role, permissions)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="promote", description="Promotes a member to the next rank in the hierarchy.")
-    @app_commands.describe(member="The member to promote.")
-    async def clan_promote(self, interaction: discord.Interaction, member: discord.Member) -> None:
+    @app_commands.command(name="promote", description="Promotes a member to the next rank or directly to a specified role.")
+    @app_commands.describe(
+        member="The member to promote.",
+        to_role="Optional: Select a specific target role to promote directly to."
+    )
+    @app_commands.autocomplete(to_role=_clan_roles_autocomplete_no_all)
+    async def clan_promote(self, interaction: discord.Interaction, member: discord.Member, to_role: str | None = None) -> None:
         """Promotes a user inside the clan."""
         if interaction.guild_id is None:
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
             return
-            
+
         if member.id == interaction.user.id:
             await interaction.response.send_message("❌ You cannot promote yourself.", ephemeral=True)
             return
@@ -2050,35 +2054,48 @@ class ClanGroup(app_commands.Group):
             if not exec_member.clan.approved:
                 await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
                 return
-                
-            is_leader = exec_member.clan.owner_id == interaction.user.id
+
+            is_leader = bool(exec_member and ((exec_member.clan.owner_id == interaction.user.id) or (exec_member.role and exec_member.role.hierarchy_level == 100)))
             can_promote = exec_member.role.permissions.can_promote if (exec_member.role and exec_member.role.permissions) else False
-            
+
             if not is_leader and not can_promote:
                 await interaction.response.send_message("❌ You lack permission to promote members.", ephemeral=True)
                 return
-                
+
             target_member = await get_member_membership(session, guild_id, member.id)
             if not target_member or target_member.clan_id != exec_member.clan_id:
                 await interaction.response.send_message("❌ That member is not in your clan.", ephemeral=True)
                 return
-                
+
             # Fetch all roles sorted by hierarchy
             roles_result = await session.execute(
                 select(ClanRole).filter_by(clan_id=exec_member.clan_id).order_by(ClanRole.hierarchy_level.asc())
             )
             roles = list(roles_result.scalars())
-            
+
             current_role_idx = next(i for i, r in enumerate(roles) if r.id == target_member.role_id)
-            if current_role_idx == len(roles) - 1:
-                await interaction.response.send_message("❌ Target member is already at the highest possible rank.", ephemeral=True)
-                return
-                
-            next_role = roles[current_role_idx + 1]
-            
+            current_role = roles[current_role_idx]
+
+            if to_role:
+                target_role_obj = next((r for r in roles if r.role_name.lower() == to_role.strip().lower()), None)
+                if not target_role_obj:
+                    await interaction.response.send_message(f"❌ Role '{to_role}' not found in your clan.", ephemeral=True)
+                    return
+
+                if target_role_obj.hierarchy_level <= current_role.hierarchy_level:
+                    await interaction.response.send_message(f"❌ Target role **{target_role_obj.role_name}** is not a promotion from **{current_role.role_name}**.", ephemeral=True)
+                    return
+
+                next_role = target_role_obj
+            else:
+                if current_role_idx == len(roles) - 1:
+                    await interaction.response.send_message("❌ Target member is already at the highest possible rank.", ephemeral=True)
+                    return
+                next_role = roles[current_role_idx + 1]
+
             # Check hierarchy boundaries
             if not is_leader:
-                if exec_member.role.hierarchy_level <= target_member.role.hierarchy_level:
+                if exec_member.role.hierarchy_level <= current_role.hierarchy_level:
                     await interaction.response.send_message("❌ Your rank must be higher than the target's rank.", ephemeral=True)
                     return
                 if exec_member.role.hierarchy_level <= next_role.hierarchy_level:
@@ -2095,7 +2112,7 @@ class ClanGroup(app_commands.Group):
                     return
 
             # Execute promotion
-            old_role_name = target_member.role.role_name
+            old_role_name = current_role.role_name
             target_member.role_id = next_role.id
             
             # Log action
