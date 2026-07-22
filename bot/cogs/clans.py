@@ -1512,6 +1512,56 @@ class ClanElectionView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
+async def _clan_roles_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete helper for clan role names with All Roles option."""
+    if not interaction.guild_id:
+        return []
+
+    async with get_db_session() as session:
+        membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
+        if not membership or not membership.clan:
+            return []
+
+        roles_res = await session.execute(
+            select(ClanRole).filter_by(clan_id=membership.clan_id).order_by(ClanRole.hierarchy_level.desc())
+        )
+        roles = list(roles_res.scalars())
+
+        choices = [app_commands.Choice(name="🌟 All Clan Roles (Allow Entire Clan)", value="ALL_ROLES")]
+        for r in roles:
+            if not current or current.lower() in r.role_name.lower():
+                choices.append(app_commands.Choice(name=f"🛡️ {r.role_name}", value=r.role_name))
+        return choices[:25]
+
+
+async def _clan_roles_autocomplete_no_all(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete helper for clan roles (excluding All Roles option)."""
+    if not interaction.guild_id:
+        return []
+
+    async with get_db_session() as session:
+        membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
+        if not membership or not membership.clan:
+            return []
+
+        roles_res = await session.execute(
+            select(ClanRole).filter_by(clan_id=membership.clan_id).order_by(ClanRole.hierarchy_level.desc())
+        )
+        roles = list(roles_res.scalars())
+
+        choices = []
+        for r in roles:
+            if not current or current.lower() in r.role_name.lower():
+                choices.append(app_commands.Choice(name=f"🛡️ {r.role_name}", value=r.role_name))
+        return choices[:25]
+
+
 # ==============================================================================
 # CLAN SLASH COMMANDS COG
 # ==============================================================================
@@ -1939,6 +1989,7 @@ class ClanGroup(app_commands.Group):
 
     @app_commands.command(name="permissions", description="Configures permissions for a specific role (Leader only).")
     @app_commands.describe(role_name="The name of the role to customize.")
+    @app_commands.autocomplete(role_name=_clan_roles_autocomplete_no_all)
     async def clan_permissions(self, interaction: discord.Interaction, role_name: str) -> None:
         """Toggles clan authority permissions per rank."""
         if interaction.guild_id is None:
@@ -2312,10 +2363,11 @@ class ClanGroup(app_commands.Group):
 
     @channel_group.command(name="access", description="Configures channel permission overrides for a custom clan role.")
     @app_commands.describe(
-        role_name="The name of your custom clan role.",
+        role_name="The name of your custom clan role (or select 'All Clan Roles').",
         can_view="Allow members with this role to view the private clan channels?",
         can_message="Allow members with this role to send messages in the private text channel?"
     )
+    @app_commands.autocomplete(role_name=_clan_roles_autocomplete)
     async def channel_access(
         self,
         interaction: discord.Interaction,
@@ -2323,67 +2375,42 @@ class ClanGroup(app_commands.Group):
         can_view: bool,
         can_message: bool
     ) -> None:
-        """Sets custom channel permission overrides for a clan role."""
+        """Sets custom channel permission overrides for a clan role or all clan roles."""
         if interaction.guild_id is None:
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
             return
-            
+
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
-        
+
         async with get_db_session() as session:
-            # 1. Fetch user's membership to verify leadership
             exec_member = await get_member_membership(session, guild_id, interaction.user.id)
             if not exec_member:
                 await interaction.followup.send("❌ You are not in a clan.", ephemeral=True)
                 return
-                
+
             clan = exec_member.clan
-            if clan.owner_id != interaction.user.id:
+            is_leader = bool(exec_member and ((clan.owner_id == interaction.user.id) or (exec_member.role and exec_member.role.hierarchy_level == 100)))
+            if not is_leader:
                 await interaction.followup.send("❌ Only the Clan Leader can configure channel access overrides.", ephemeral=True)
                 return
-                
-            # 2. Fetch the target role inside the clan
-            role_result = await session.execute(
-                select(ClanRole).filter_by(clan_id=clan.id).filter(ClanRole.role_name.ilike(role_name))
-            )
-            target_role = role_result.scalar_one_or_none()
-            if not target_role:
-                await interaction.followup.send(f"❌ Role '{role_name}' not found in your clan.", ephemeral=True)
-                return
-                
-            discord_role = interaction.guild.get_role(target_role.discord_role_id) if target_role.discord_role_id else None
-            if not discord_role:
-                # Dynamic self-healing role lookup & creation
-                discord_role = discord.utils.get(interaction.guild.roles, name=target_role.role_name)
-                if not discord_role:
-                    discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} {target_role.role_name}")
-                if not discord_role and target_role.hierarchy_level == 100:
-                    discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} Leader")
-                if not discord_role and target_role.hierarchy_level == 1:
-                    discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} Member")
 
-                if not discord_role:
-                    role_color = parse_color(target_role.color) if target_role.color else discord.Color.blue()
-                    try:
-                        discord_role = await interaction.guild.create_role(
-                            name=target_role.role_name,
-                            color=role_color,
-                            reason="Journey Clan Channel Access: Created missing role on Discord"
-                        )
-                    except discord.Forbidden:
-                        await interaction.followup.send("❌ Journey Bot lacks 'Manage Roles' permission to create/link Discord roles.", ephemeral=True)
-                        return
+            is_all = role_name.upper() == "ALL_ROLES" or role_name.lower().strip() in ("all", "all roles", "all_roles")
+            if is_all:
+                roles_result = await session.execute(
+                    select(ClanRole).filter_by(clan_id=clan.id)
+                )
+                target_roles = list(roles_result.scalars())
+            else:
+                role_result = await session.execute(
+                    select(ClanRole).filter_by(clan_id=clan.id).filter(ClanRole.role_name.ilike(role_name.strip()))
+                )
+                target_role = role_result.scalar_one_or_none()
+                if not target_role:
+                    await interaction.followup.send(f"❌ Role '{role_name}' not found in your clan.", ephemeral=True)
+                    return
+                target_roles = [target_role]
 
-                target_role.discord_role_id = discord_role.id
-                if discord_role.name != target_role.role_name:
-                    try:
-                        await discord_role.edit(name=target_role.role_name, reason="Journey Clan Channel Access: Rename role to match exact name.")
-                    except discord.Forbidden:
-                        pass
-                await session.commit()
-                
-            # 3. Fetch text & voice channels with dynamic fallback
             text_channel = interaction.guild.get_channel(clan.discord_text_channel_id) if clan.discord_text_channel_id else None
             if not text_channel:
                 expected_tname = f"💬-{clan.name.lower().replace(' ', '-')}"
@@ -2404,7 +2431,7 @@ class ClanGroup(app_commands.Group):
 
             if text_channel or voice_channel:
                 await session.commit()
-            
+
             if not text_channel and not voice_channel:
                 await interaction.followup.send(
                     "❌ No private channels are currently set up or linked to your clan.\n"
@@ -2412,48 +2439,72 @@ class ClanGroup(app_commands.Group):
                     ephemeral=True
                 )
                 return
-                
-            # Apply overrides
-            try:
-                # Text Channel overrides
-                if text_channel:
-                    await text_channel.set_permissions(
-                        discord_role,
-                        view_channel=can_view,
-                        send_messages=can_message,
-                        read_message_history=can_view,
-                        reason=f"Journey Clan Channel Access Config: Modified by Clan Leader."
-                    )
-                    
-                # Voice Channel overrides
-                if voice_channel:
-                    await voice_channel.set_permissions(
-                        discord_role,
-                        view_channel=can_view,
-                        connect=can_view,
-                        reason=f"Journey Clan Channel Access Config: Modified by Clan Leader."
-                    )
-            except discord.Forbidden:
-                await interaction.followup.send("❌ Journey Bot lacks 'Manage Channels' or 'Manage Roles' permissions to modify overrides.", ephemeral=True)
-                return
-                
-            # Log action
+
+            updated_roles_summary = []
+
+            for target_role in target_roles:
+                discord_role = interaction.guild.get_role(target_role.discord_role_id) if target_role.discord_role_id else None
+                if not discord_role:
+                    discord_role = discord.utils.get(interaction.guild.roles, name=target_role.role_name)
+                    if not discord_role:
+                        discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} {target_role.role_name}")
+                    if not discord_role and target_role.hierarchy_level == 100:
+                        discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} Leader")
+                    if not discord_role and target_role.hierarchy_level == 1:
+                        discord_role = discord.utils.get(interaction.guild.roles, name=f"{clan.name} Member")
+
+                    if not discord_role:
+                        role_color = parse_color(target_role.color) if target_role.color else discord.Color.blue()
+                        try:
+                            discord_role = await interaction.guild.create_role(
+                                name=target_role.role_name,
+                                color=role_color,
+                                reason="Journey Clan Channel Access: Created missing role on Discord"
+                            )
+                        except discord.Forbidden:
+                            pass
+
+                    if discord_role:
+                        target_role.discord_role_id = discord_role.id
+
+                if discord_role:
+                    try:
+                        if text_channel:
+                            await text_channel.set_permissions(
+                                discord_role,
+                                view_channel=can_view,
+                                send_messages=can_message if can_view else False,
+                                read_message_history=can_view,
+                                reason="Journey Clan Channel Access Override"
+                            )
+                        if voice_channel:
+                            await voice_channel.set_permissions(
+                                discord_role,
+                                view_channel=can_view,
+                                connect=can_view,
+                                speak=can_view,
+                                reason="Journey Clan Channel Access Override"
+                            )
+                        updated_roles_summary.append(f"• **{target_role.role_name}** ({discord_role.mention})")
+                    except discord.Forbidden:
+                        updated_roles_summary.append(f"• **{target_role.role_name}** (⚠️ Bot lacks permissions)")
+
             await write_audit_log(
                 session,
                 clan.id,
                 interaction.user.id,
                 "channel_access_updated",
-                target_role.role_name,
+                "ALL ROLES" if is_all else target_roles[0].role_name,
                 f"View: {can_view}, Message: {can_message}"
             )
             await session.commit()
-            
+
+        target_name_str = "ALL Clan Roles" if is_all else f"Role **{target_roles[0].role_name}**"
         status_msg = (
-            f"✅ **Permissions Updated!**\n"
-            f"Role: **{target_role.role_name}**\n"
+            f"✅ **Permissions Updated for {target_name_str}!**\n"
             f"👁️ **Can View:** {'🟢 Yes' if can_view else '🔴 No'}\n"
-            f"💬 **Can Message:** {'🟢 Yes' if can_message else '🔴 No'}\n"
-            f"Applied changes to the private channels."
+            f"💬 **Can Message:** {'🟢 Yes' if (can_view and can_message) else '🔴 No'}\n\n"
+            f"**Updated Roles:**\n" + ("\n".join(updated_roles_summary) if updated_roles_summary else "None")
         )
         await interaction.followup.send(status_msg, ephemeral=True)
 
