@@ -67,31 +67,38 @@ async def sync_discord_roles(guild: discord.Guild, member_id: int, correct_role_
     member = guild.get_member(member_id)
     if not member:
         return
-        
-    # Get all discord role objects associated with the clan's roles
-    clan_discord_roles = []
+
+    # Find the target correct discord role
     correct_discord_role = None
+    target_crole = next((r for r in clan_roles if r.id == correct_role_id), None)
     
-    for r in clan_roles:
-        d_role = None
-        if r.discord_role_id:
-            d_role = guild.get_role(r.discord_role_id)
-        if not d_role:
-            d_role = discord.utils.get(guild.roles, name=r.role_name)
-        if d_role:
-            clan_discord_roles.append(d_role)
-            if r.id == correct_role_id:
-                correct_discord_role = d_role
-                
-    # Add correct role, remove all other clan roles
-    roles_to_remove = [r for r in clan_discord_roles if r in member.roles and (not correct_discord_role or r.id != correct_discord_role.id)]
+    if target_crole:
+        if target_crole.discord_role_id:
+            correct_discord_role = guild.get_role(target_crole.discord_role_id)
+        if not correct_discord_role:
+            correct_discord_role = discord.utils.get(guild.roles, name=target_crole.role_name)
+
+    # Collect ALL discord role IDs and role names belonging to this clan
+    clan_role_names = {r.role_name.lower() for r in clan_roles}
+    clan_role_ids = {r.discord_role_id for r in clan_roles if r.discord_role_id}
+
+    roles_to_remove = []
+    for m_role in member.roles:
+        # Check if member role matches any clan role by ID or case-insensitive name
+        is_clan_role = m_role.id in clan_role_ids or m_role.name.lower() in clan_role_names
+        is_correct = correct_discord_role and m_role.id == correct_discord_role.id
+        
+        if is_clan_role and not is_correct:
+            roles_to_remove.append(m_role)
+
     roles_to_add = [correct_discord_role] if correct_discord_role and correct_discord_role not in member.roles else []
-    
+
     if roles_to_remove:
         try:
             await member.remove_roles(*roles_to_remove, reason="Journey Clan Role Sync - Strip Previous Clan Roles")
         except discord.Forbidden:
             logger.warning(f"Missing permissions to remove roles from {member.display_name}")
+
     if roles_to_add:
         try:
             await member.add_roles(*roles_to_add, reason="Journey Clan Role Sync - Assign New Clan Role")
