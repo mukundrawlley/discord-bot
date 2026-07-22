@@ -1947,8 +1947,9 @@ class ClanGroup(app_commands.Group):
 
         async with get_db_session() as session:
             membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
-            if not membership or membership.clan.owner_id != interaction.user.id:
-                await interaction.response.send_message("❌ Only the clan Leader can configure permissions.", ephemeral=True)
+            is_leader = bool(membership and ((membership.clan.owner_id == interaction.user.id) or (membership.role and membership.role.hierarchy_level == 100)))
+            if not membership or not is_leader:
+                await interaction.response.send_message("❌ Only clan Leaders can configure permissions.", ephemeral=True)
                 return
             if not membership.clan.approved:
                 await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
@@ -1963,10 +1964,6 @@ class ClanGroup(app_commands.Group):
             role = role_result.scalar_one_or_none()
             if not role:
                 await interaction.response.send_message(f"❌ Role '{role_name}' not found.", ephemeral=True)
-                return
-                
-            if role.is_system_role and role.hierarchy_level == 100:
-                await interaction.response.send_message("❌ The Leader system role permissions cannot be edited.", ephemeral=True)
                 return
                 
             permissions = role.permissions
@@ -2279,7 +2276,7 @@ class ClanGroup(app_commands.Group):
                 await interaction.followup.send("❌ This clan is pending Staff Approval and its features are currently locked.", ephemeral=True)
                 return
                 
-            is_leader = exec_member.clan.owner_id == interaction.user.id
+            is_leader = bool(exec_member and ((exec_member.clan.owner_id == interaction.user.id) or (exec_member.role and exec_member.role.hierarchy_level == 100)))
             can_review = exec_member.role.permissions.can_review_applications if (exec_member.role and exec_member.role.permissions) else False
             
             if not is_leader and not can_review:
