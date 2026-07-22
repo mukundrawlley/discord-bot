@@ -6,6 +6,38 @@ import logging
 logger = logging.getLogger("Journey.BotManagement")
 
 
+async def apply_allowed_overwrites(channel: discord.TextChannel, bot: discord.Member, reason: str) -> None:
+    """Grants messaging, embeds, attachments, threads, and slash command access in this channel."""
+    await channel.set_permissions(
+        bot,
+        view_channel=True,
+        send_messages=True,
+        read_message_history=True,
+        embed_links=True,
+        attach_files=True,
+        create_public_threads=True,
+        create_private_threads=True,
+        send_messages_in_threads=True,
+        use_application_commands=True,
+        reason=reason
+    )
+
+
+async def apply_blocked_overwrites(channel: discord.TextChannel, bot: discord.Member, reason: str) -> None:
+    """Strictly blocks text, embeds, attachments, threads, and slash commands in this channel."""
+    await channel.set_permissions(
+        bot,
+        send_messages=False,
+        embed_links=False,
+        attach_files=False,
+        create_public_threads=False,
+        create_private_threads=False,
+        send_messages_in_threads=False,
+        use_application_commands=False,
+        reason=reason
+    )
+
+
 @app_commands.allowed_installs(guilds=True, users=False)
 @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 class BotGroup(app_commands.Group):
@@ -70,18 +102,14 @@ class BotGroup(app_commands.Group):
                 # Exclusive Mode: Allow ONLY target channels, block ALL other channels across server
                 for ch in interaction.guild.text_channels:
                     if ch.id in target_ids:
-                        await ch.set_permissions(
-                            bot,
-                            view_channel=True,
-                            send_messages=True,
-                            read_message_history=True,
+                        await apply_allowed_overwrites(
+                            ch, bot,
                             reason=f"Journey Bot Restriction: Allowed channel set by Staff {interaction.user.display_name}"
                         )
                         allowed_mentions.append(ch.mention)
                     else:
-                        await ch.set_permissions(
-                            bot,
-                            send_messages=False,
+                        await apply_blocked_overwrites(
+                            ch, bot,
                             reason=f"Journey Bot Restriction: Blocked channel set by Staff {interaction.user.display_name}"
                         )
                         blocked_count += 1
@@ -95,16 +123,15 @@ class BotGroup(app_commands.Group):
                     ),
                     color=discord.Color.green()
                 )
-                embed.set_footer(text="Bot can now ONLY send messages in the specified allowed channel(s).")
+                embed.set_footer(text="Bot is strictly blocked from text, embeds, threads & slash commands in all other channels.")
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
             else:
                 # Deny Mode: Block only the specified channels
                 blocked_mentions = []
                 for ch in target_channels:
-                    await ch.set_permissions(
-                        bot,
-                        send_messages=False,
+                    await apply_blocked_overwrites(
+                        ch, bot,
                         reason=f"Journey Bot Restriction: Explicitly blocked by Staff {interaction.user.display_name}"
                     )
                     blocked_mentions.append(ch.mention)
@@ -117,6 +144,7 @@ class BotGroup(app_commands.Group):
                     ),
                     color=discord.Color.red()
                 )
+                embed.set_footer(text="Text, embeds, attachments, threads & slash commands have been disabled for these channels.")
                 await interaction.followup.send(embed=embed, ephemeral=True)
 
         except discord.Forbidden:
@@ -165,17 +193,13 @@ class BotGroup(app_commands.Group):
         try:
             for ch in interaction.guild.text_channels:
                 if ch.id == allowed_channel.id:
-                    await ch.set_permissions(
-                        bot,
-                        view_channel=True,
-                        send_messages=True,
-                        read_message_history=True,
+                    await apply_allowed_overwrites(
+                        ch, bot,
                         reason=f"Journey Bot Isolation: Primary Allowed Channel set by {interaction.user.display_name}"
                     )
                 else:
-                    await ch.set_permissions(
-                        bot,
-                        send_messages=False,
+                    await apply_blocked_overwrites(
+                        ch, bot,
                         reason=f"Journey Bot Isolation: Blocked by {interaction.user.display_name}"
                     )
                     restricted_count += 1
@@ -189,7 +213,7 @@ class BotGroup(app_commands.Group):
                 ),
                 color=discord.Color.gold()
             )
-            embed.set_footer(text="All other text channels in the server have been locked for this bot.")
+            embed.set_footer(text="Text, embeds, attachments, threads & slash commands are disabled across all other channels.")
             await interaction.followup.send(embed=embed, ephemeral=True)
 
         except discord.Forbidden:
@@ -283,7 +307,7 @@ class BotGroup(app_commands.Group):
         )
         embed.set_thumbnail(url=bot.display_avatar.url)
         embed.add_field(name="🟢 Explicitly Allowed Channels", value=allowed_str, inline=False)
-        embed.add_field(name="🔴 Explicitly Blocked Channels", value=denied_str, inline=False)
+        embed.add_field(name="🔴 Explicitly Blocked (Messages, Embeds, Threads, Slash Cmds)", value=denied_str, inline=False)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
