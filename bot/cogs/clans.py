@@ -827,13 +827,8 @@ async def validate_and_submit_application(
     from bot.models.user import UserGuildStats
     from bot.models.clan import Clan, ClanMember, ClanRole, ClanApplication, ClanSettings
 
-    # 1. Fetch user stats (User existence check)
-    stats_res = await session.execute(
-        select(UserGuildStats).filter_by(guild_id=guild.id, user_id=user_id)
-    )
-    stats = stats_res.scalar_one_or_none()
-    if not stats:
-        return False, "You do not have leveling stats initialized yet. Speak in the server first."
+    # 1. Initialize user stats if not present
+    stats = await DatabaseService.get_or_create_stats(session, guild.id, user_id)
         
     # 2. Fetch clan (Existence check)
     clan_res = await session.execute(
