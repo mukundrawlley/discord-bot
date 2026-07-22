@@ -842,13 +842,16 @@ async def validate_and_submit_application(
     if not clan.approved:
         return False, "This clan is pending Staff Approval and cannot accept applications."
         
-    # 4. Check settings (Applications enabled)
+    # 4. Check settings (Applications enabled unless explicitly closed)
     clan_settings_res = await session.execute(
         select(ClanSettings).filter_by(clan_id=clan.id)
     )
     clan_settings = clan_settings_res.scalar_one_or_none()
-    if not clan_settings or clan_settings.join_type != "apply":
-        return False, "This clan has disabled applications (invite only or open)."
+    if not clan_settings:
+        clan_settings = ClanSettings(clan_id=clan.id, join_type="apply")
+        session.add(clan_settings)
+    elif clan_settings.join_type == "closed":
+        return False, "This clan has currently closed applications."
         
     # 5. Check if user already in a clan
     existing_member_res = await session.execute(
