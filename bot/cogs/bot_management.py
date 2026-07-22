@@ -12,21 +12,29 @@ class BotGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="bot", description="Bot channel restriction & channel management commands.")
 
-    @app_commands.command(name="restrict", description="Restricts or allows a bot in a specific text channel (Staff only).")
+    @app_commands.command(name="restrict", description="Restricts a bot so it can only message in specified allowed channels (Staff only).")
     @app_commands.describe(
-        bot="The bot user to restrict or allow.",
-        channel="The text channel to configure permissions for.",
-        allow="Set to True to allow messaging, or False to restrict/deny messaging. (Default: False)"
+        bot="The bot user to restrict.",
+        channel1="The primary text channel.",
+        allow="Set to True to allow ONLY these channels, or False to block these channels. (Default: True)",
+        channel2="Optional 2nd text channel.",
+        channel3="Optional 3rd text channel.",
+        channel4="Optional 4th text channel.",
+        channel5="Optional 5th text channel."
     )
     @app_commands.default_permissions(administrator=True)
     async def bot_restrict(
         self,
         interaction: discord.Interaction,
         bot: discord.Member,
-        channel: discord.TextChannel,
-        allow: bool = False
+        channel1: discord.TextChannel,
+        allow: bool = True,
+        channel2: discord.TextChannel | None = None,
+        channel3: discord.TextChannel | None = None,
+        channel4: discord.TextChannel | None = None,
+        channel5: discord.TextChannel | None = None
     ) -> None:
-        """Restricts or allows a bot in a specific channel."""
+        """Restricts a bot to specified text channels across the server."""
         if interaction.guild_id is None or interaction.guild is None:
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
             return
@@ -49,37 +57,71 @@ class BotGroup(app_commands.Group):
 
         await interaction.response.defer(ephemeral=True)
 
+        # Collect unique target channels
+        raw_channels = [c for c in [channel1, channel2, channel3, channel4, channel5] if c is not None]
+        target_channels = list({c.id: c for c in raw_channels}.values())
+        target_ids = {c.id for c in target_channels}
+
+        allowed_mentions = []
+        blocked_count = 0
+
         try:
             if allow:
-                await channel.set_permissions(
-                    bot,
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True,
-                    reason=f"Journey Bot Restriction: Allowed by Staff {interaction.user.display_name}"
-                )
-                action_text = "🟢 **Allowed**"
-                detail_text = f"**{bot.mention}** is now allowed to view and send messages in {channel.mention}."
-            else:
-                await channel.set_permissions(
-                    bot,
-                    send_messages=False,
-                    reason=f"Journey Bot Restriction: Restricted by Staff {interaction.user.display_name}"
-                )
-                action_text = "🔴 **Restricted**"
-                detail_text = f"**{bot.mention}** is now blocked from sending messages in {channel.mention}."
+                # Exclusive Mode: Allow ONLY target channels, block ALL other channels across server
+                for ch in interaction.guild.text_channels:
+                    if ch.id in target_ids:
+                        await ch.set_permissions(
+                            bot,
+                            view_channel=True,
+                            send_messages=True,
+                            read_message_history=True,
+                            reason=f"Journey Bot Restriction: Allowed channel set by Staff {interaction.user.display_name}"
+                        )
+                        allowed_mentions.append(ch.mention)
+                    else:
+                        await ch.set_permissions(
+                            bot,
+                            send_messages=False,
+                            reason=f"Journey Bot Restriction: Blocked channel set by Staff {interaction.user.display_name}"
+                        )
+                        blocked_count += 1
 
-            embed = discord.Embed(
-                title=f"🤖 Bot Channel Restriction Updated",
-                description=f"**Status:** {action_text}\n{detail_text}",
-                color=discord.Color.green() if allow else discord.Color.red()
-            )
-            embed.set_footer(text=f"Configured by {interaction.user.display_name}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+                embed = discord.Embed(
+                    title=f"🔒 Bot Exclusive Restriction Applied",
+                    description=(
+                        f"**Target Bot:** {bot.mention} ({bot.display_name})\n\n"
+                        f"🟢 **Allowed Channels:** {', '.join(allowed_mentions)}\n"
+                        f"🔴 **Blocked Channels:** `{blocked_count}` text channels across the server"
+                    ),
+                    color=discord.Color.green()
+                )
+                embed.set_footer(text="Bot can now ONLY send messages in the specified allowed channel(s).")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+
+            else:
+                # Deny Mode: Block only the specified channels
+                blocked_mentions = []
+                for ch in target_channels:
+                    await ch.set_permissions(
+                        bot,
+                        send_messages=False,
+                        reason=f"Journey Bot Restriction: Explicitly blocked by Staff {interaction.user.display_name}"
+                    )
+                    blocked_mentions.append(ch.mention)
+
+                embed = discord.Embed(
+                    title=f"🔴 Bot Channels Blocked",
+                    description=(
+                        f"**Target Bot:** {bot.mention} ({bot.display_name})\n\n"
+                        f"🔴 **Explicitly Blocked Channels:** {', '.join(blocked_mentions)}"
+                    ),
+                    color=discord.Color.red()
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
 
         except discord.Forbidden:
             await interaction.followup.send(
-                f"❌ Journey Bot lacks 'Manage Channels' or 'Manage Permissions' permission on Discord to configure overrides for {channel.mention}.",
+                "❌ Journey Bot lacks 'Manage Channels' or 'Manage Permissions' permission on Discord to configure overrides.",
                 ephemeral=True
             )
         except Exception as e:
