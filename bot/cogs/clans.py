@@ -1371,6 +1371,142 @@ class AuditLogsView(discord.ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.get_embed(interaction.client), view=self)
 
+ACTIVE_ELECTIONS: dict[int, dict] = {}
+
+class CandidateSelect(discord.ui.Select):
+    def __init__(self, clan_id: int, candidates: dict):
+        options = [
+            discord.SelectOption(label=name[:100], value=str(uid), description="Vote for this candidate")
+            for uid, name in candidates.items()
+        ]
+        super().__init__(placeholder="Select a candidate to vote for...", min_values=1, max_values=1, options=options)
+        self.clan_id = clan_id
+
+    async def callback(self, interaction: discord.Interaction):
+        candidate_id = int(self.values[0])
+        async with get_db_session() as session:
+            voter_membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
+            if not voter_membership or voter_membership.clan_id != self.clan_id:
+                await interaction.response.send_message("❌ Only members of this clan can vote in this election.", ephemeral=True)
+                return
+                
+        election = ACTIVE_ELECTIONS.get(self.clan_id)
+        if not election:
+            await interaction.response.send_message("❌ Election is no longer active.", ephemeral=True)
+            return
+            
+        election["votes"][interaction.user.id] = candidate_id
+        candidate_name = election["candidates"].get(candidate_id, "Candidate")
+        await interaction.response.send_message(f"✅ Your vote for **{candidate_name}** has been cast!", ephemeral=True)
+
+
+class ClanElectionView(discord.ui.View):
+    def __init__(self, clan_id: int, clan_name: str):
+        super().__init__(timeout=None)
+        self.clan_id = clan_id
+        self.clan_name = clan_name
+
+    def get_embed(self, guild: discord.Guild) -> discord.Embed:
+        election = ACTIVE_ELECTIONS.get(self.clan_id, {"candidates": {}, "votes": {}})
+        candidates = election["candidates"]
+        votes = election["votes"]
+
+        tallies = {uid: 0 for uid in candidates}
+        for voter_id, cand_id in votes.items():
+            if cand_id in tallies:
+                tallies[cand_id] += 1
+
+        cand_list = []
+        for uid, name in candidates.items():
+            count = tallies.get(uid, 0)
+            cand_list.append(f"• **{name}** (`{count} vote{'s' if count != 1 else ''}`)")
+
+        desc = (
+            f"👑 **Clan Leader Election in Progress** for **{self.clan_name}**!\n"
+            f"The previous leader has departed. Clan members can nominate themselves or cast their vote below.\n\n"
+            f"**Candidates List:**\n" + ("\n".join(cand_list) if cand_list else "*No candidates nominated yet. Click 'Nominate Myself' below!*") + "\n\n"
+            f"**Total Votes Cast:** `{len(votes)}`"
+        )
+        embed = discord.Embed(title=f"🗳️ Clan Leadership Election: {self.clan_name}", description=desc, color=discord.Color.gold())
+        embed.set_footer(text="Staff can conclude the election when voting is complete.")
+        return embed
+
+    @discord.ui.button(label="🙋 Nominate Myself", style=discord.ButtonStyle.primary, custom_id="election_nominate")
+    async def nominate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        async with get_db_session() as session:
+            membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
+            if not membership or membership.clan_id != self.clan_id:
+                await interaction.response.send_message("❌ Only members of this clan can enter the election.", ephemeral=True)
+                return
+
+        election = ACTIVE_ELECTIONS.setdefault(self.clan_id, {"candidates": {}, "votes": {}})
+        election["candidates"][interaction.user.id] = interaction.user.display_name
+        await interaction.response.edit_message(embed=self.get_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="🗳️ Cast Vote", style=discord.ButtonStyle.success, custom_id="election_vote")
+    async def vote(self, interaction: discord.Interaction, button: discord.ui.Button):
+        election = ACTIVE_ELECTIONS.get(self.clan_id)
+        if not election or not election["candidates"]:
+            await interaction.response.send_message("❌ No candidates have nominated themselves yet.", ephemeral=True)
+            return
+
+        view = discord.ui.View()
+        view.add_item(CandidateSelect(self.clan_id, election["candidates"]))
+        await interaction.response.send_message("Select the candidate you want to vote for:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="🏁 Conclude Election (Staff Only)", style=discord.ButtonStyle.danger, custom_id="election_conclude")
+    async def conclude(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        is_staff = member and (member.guild_permissions.administrator or member.guild_permissions.manage_roles)
+        if not is_staff:
+            await interaction.response.send_message("❌ Only Server Staff can conclude the election.", ephemeral=True)
+            return
+
+        election = ACTIVE_ELECTIONS.pop(self.clan_id, None)
+        if not election or not election["candidates"]:
+            await interaction.response.send_message("❌ Cannot conclude: No candidates or election data found.", ephemeral=True)
+            return
+
+        tallies = {uid: 0 for uid in election["candidates"]}
+        for voter_id, cand_id in election["votes"].items():
+            if cand_id in tallies:
+                tallies[cand_id] += 1
+
+        winner_id = max(tallies, key=tallies.get)
+        max_votes = tallies[winner_id]
+        winner_name = election["candidates"][winner_id]
+
+        async with get_db_session() as session:
+            clan_res = await session.execute(select(Clan).filter_by(id=self.clan_id))
+            clan = clan_res.scalar_one_or_none()
+            if clan:
+                clan.owner_id = winner_id
+
+            roles_res = await session.execute(select(ClanRole).filter_by(clan_id=self.clan_id).order_by(ClanRole.hierarchy_level.desc()))
+            roles = list(roles_res.scalars())
+            leader_role = roles[0] if roles else None
+
+            if leader_role:
+                member_res = await session.execute(select(ClanMember).filter_by(clan_id=self.clan_id, user_id=winner_id))
+                cmember = member_res.scalar_one_or_none()
+                if cmember:
+                    cmember.role_id = leader_role.id
+                    await session.commit()
+                    
+                if interaction.guild:
+                    await sync_discord_roles(interaction.guild, winner_id, leader_role.id, roles)
+
+        for child in self.children:
+            child.disabled = True
+
+        embed = discord.Embed(
+            title=f"🎉 Election Concluded - {self.clan_name}",
+            description=f"👑 **{winner_name}** won the election with **{max_votes} vote{'s' if max_votes != 1 else ''}** and is now the official **Clan Leader** of **{self.clan_name}**!",
+            color=discord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 # ==============================================================================
 # CLAN SLASH COMMANDS COG
 # ==============================================================================
@@ -1698,6 +1834,48 @@ class ClanGroup(app_commands.Group):
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="election", description="Initiates a Clan Leader election for clans whose leader left (Staff/Admins only).")
+    @app_commands.describe(clan_name="The name of the clan to hold an election for.")
+    @app_commands.default_permissions(administrator=True)
+    async def clan_election(self, interaction: discord.Interaction, clan_name: str) -> None:
+        """Starts an interactive leader election panel for a clan (Staff only)."""
+        if interaction.guild_id is None or interaction.guild is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+
+        member = interaction.guild.get_member(interaction.user.id)
+        is_staff = member and (member.guild_permissions.administrator or member.guild_permissions.manage_roles)
+        if not is_staff:
+            await interaction.response.send_message("❌ Only Server Staff & Administrators can initiate clan leader elections.", ephemeral=True)
+            return
+
+        async with get_db_session() as session:
+            clan_res = await session.execute(
+                select(Clan).filter_by(guild_id=interaction.guild_id).filter(Clan.name.ilike(clan_name.strip()))
+            )
+            clan = clan_res.scalar_one_or_none()
+            if not clan:
+                await interaction.response.send_message(f"❌ Clan '{clan_name}' not found in this server.", ephemeral=True)
+                return
+
+            leader_member = interaction.guild.get_member(clan.owner_id)
+            leader_status = "⚠️ (Previous leader left the server)" if not leader_member else "ℹ️ (Leader is still present)"
+
+            ACTIVE_ELECTIONS[clan.id] = {
+                "started_by": interaction.user.id,
+                "candidates": {},
+                "votes": {}
+            }
+
+            view = ClanElectionView(clan.id, clan.name)
+            embed = view.get_embed(interaction.guild)
+
+            await interaction.response.send_message(
+                f"📢 **Staff Notice**: Clan Leader election initiated for **{clan.name}** {leader_status}!",
+                embed=embed,
+                view=view
+            )
 
     @app_commands.command(name="permissions", description="Configures permissions for a specific role (Leader only).")
     @app_commands.describe(role_name="The name of the role to customize.")
