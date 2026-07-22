@@ -246,7 +246,8 @@ class JoinConfirmView(discord.ui.View):
 
 class RoleCreateModal(discord.ui.Modal, title="Create Clan Role"):
     role_name = discord.ui.TextInput(label="Role Name", placeholder="e.g. Commander", max_length=64)
-    color = discord.ui.TextInput(label="Hex Color (Optional)", placeholder="e.g. #FFCC00", required=False, max_length=7)
+    color = discord.ui.TextInput(label="Primary Hex Color (Optional)", placeholder="e.g. #FFCC00", required=False, max_length=7)
+    color2 = discord.ui.TextInput(label="Secondary Gradient Color (Optional)", placeholder="e.g. #00FF00 (Level 2+ Boost)", required=False, max_length=7)
     limit = discord.ui.TextInput(label="Max Member Limit (Optional)", placeholder="e.g. 5 (0 or leave blank for unlimited)", required=False)
 
     def __init__(self, clan_id: int):
@@ -256,7 +257,21 @@ class RoleCreateModal(discord.ui.Modal, title="Create Clan Role"):
     async def on_submit(self, interaction: discord.Interaction):
         name = self.role_name.value.strip()
         color_val = self.color.value.strip() or None
+        color2_val = self.color2.value.strip() or None
         
+        c1_int = None
+        c2_int = None
+        if color_val:
+            try:
+                c1_int = int(color_val.strip("#"), 16)
+            except ValueError:
+                c1_int = None
+        if color2_val:
+            try:
+                c2_int = int(color2_val.strip("#"), 16)
+            except ValueError:
+                c2_int = None
+
         limit_val = None
         if self.limit.value:
             try:
@@ -282,7 +297,6 @@ class RoleCreateModal(discord.ui.Modal, title="Create Clan Role"):
             roles = list(roles_result.scalars())
             
             # The new role goes just below the Leader (hierarchy 100)
-            # Find a level between Leader and the next highest rank
             leader_level = 100
             next_highest_level = 1
             
@@ -293,7 +307,6 @@ class RoleCreateModal(discord.ui.Modal, title="Create Clan Role"):
                     
             new_level = (leader_level + next_highest_level) // 2
             if new_level == next_highest_level or new_level == leader_level:
-                # If there's no room, shift all intermediate roles down
                 new_level = leader_level - 1
                 for r in roles:
                     if r.hierarchy_level < leader_level:
@@ -301,7 +314,7 @@ class RoleCreateModal(discord.ui.Modal, title="Create Clan Role"):
                 await session.flush()
 
             # Create Discord role
-            d_color = parse_color(color_val) if color_val else discord.Color.default()
+            d_color = discord.Color(c1_int) if c1_int is not None else discord.Color.default()
             try:
                 discord_role = await interaction.guild.create_role(
                     name=name,
@@ -312,12 +325,37 @@ class RoleCreateModal(discord.ui.Modal, title="Create Clan Role"):
                 await interaction.response.send_message("❌ Journey Bot lacks 'Manage Roles' permissions on Discord to build this rank.", ephemeral=True)
                 return
 
+            # Apply gradient if color2_val provided
+            if c1_int is not None and c2_int is not None and interaction.guild:
+                route = Route('PATCH', '/guilds/{guild_id}/roles/{role_id}', guild_id=interaction.guild.id, role_id=discord_role.id)
+                json_payload = {
+                    "name": name,
+                    "color": c1_int,
+                    "secondary_color": c2_int,
+                    "colors": {
+                        "primary_color": c1_int,
+                        "secondary_color": c2_int,
+                        "tertiary_color": None
+                    },
+                    "role_colors": {
+                        "primary_color": c1_int,
+                        "secondary_color": c2_int,
+                        "tertiary_color": None
+                    },
+                    "mentionable": True
+                }
+                try:
+                    await interaction.client.http.request(route, json=json_payload, reason="Journey Clan Role Creation (Enhanced Gradient)")
+                except Exception as err:
+                    logger.warning(f"Could not apply gradient on role creation: {err}")
+
             # Add role to DB
             role = ClanRole(
                 clan_id=self.clan_id,
                 discord_role_id=discord_role.id,
                 role_name=name,
                 color=color_val,
+                color2=color2_val,
                 hierarchy_level=new_level,
                 max_members=limit_val
             )
@@ -3250,9 +3288,11 @@ async def execute_clan_repair(
         summary["voice_created"] = True
     clan.discord_voice_channel_id = voice_chan.id
 
-    # Grant text & voice channel access and ping permissions to ALL custom roles in the clan
+    # Grant text & voice channel access and ping permissions to ALL custom roles in the clan, and repair role gradients
     for r in db_roles:
         d_r = guild.get_role(r.discord_role_id) if r.discord_role_id else None
+        if not d_r:
+            d_r = discord.utils.get(guild.roles, name=r.role_name)
         if d_r:
             is_leader = r.hierarchy_level == 100
             try:
@@ -3276,6 +3316,49 @@ async def execute_clan_repair(
                     )
             except discord.Forbidden:
                 pass
+
+            # Inspect and repair role gradients via raw REST API
+            c1_val = r.color
+            c2_val = getattr(r, "color2", None)
+            c1_int = None
+            c2_int = None
+            if c1_val:
+                try:
+                    c1_int = int(c1_val.strip("#"), 16)
+                except ValueError:
+                    c1_int = None
+            if c2_val:
+                try:
+                    c2_int = int(c2_val.strip("#"), 16)
+                except ValueError:
+                    c2_int = None
+
+            if c1_int is not None:
+                route = Route('PATCH', '/guilds/{guild_id}/roles/{role_id}', guild_id=guild.id, role_id=d_r.id)
+                json_payload = {
+                    "name": r.role_name,
+                    "mentionable": getattr(r, "is_mentionable", True)
+                }
+                if c1_int is not None and c2_int is not None:
+                    json_payload["color"] = c1_int
+                    json_payload["secondary_color"] = c2_int
+                    json_payload["colors"] = {
+                        "primary_color": c1_int,
+                        "secondary_color": c2_int,
+                        "tertiary_color": None
+                    }
+                    json_payload["role_colors"] = {
+                        "primary_color": c1_int,
+                        "secondary_color": c2_int,
+                        "tertiary_color": None
+                    }
+                else:
+                    json_payload["color"] = c1_int
+
+                try:
+                    await guild.client.http.request(route, json=json_payload, reason="Journey Clan Repair: Repair role gradient and pings")
+                except Exception:
+                    pass
 
     await write_audit_log(session, clan.id, guild.owner_id, "clan_repaired")
     await session.commit()
