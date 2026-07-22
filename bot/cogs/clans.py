@@ -1589,27 +1589,52 @@ class ClanGroup(app_commands.Group):
         view = RoleManagerView(interaction.user.id, membership.clan_id, roles)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="reorder_roles", description="Reorders all clan roles directly above a specified server level role (Leader only).")
-    @app_commands.describe(highest_level_role="The highest level/rank role on the server below which level roles reside.")
-    async def clan_reorder_roles(self, interaction: discord.Interaction, highest_level_role: discord.Role) -> None:
-        """Reorders all clan roles to sit directly above a specified server level role."""
+    @app_commands.command(name="reorder_roles", description="Reorders all clan roles directly above a specified server level role (Staff/Admins only).")
+    @app_commands.describe(
+        highest_level_role="The highest level/rank role on the server below which level roles reside.",
+        clan_name="Optional clan name to target (Defaults to your clan if you are a leader)."
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def clan_reorder_roles(self, interaction: discord.Interaction, highest_level_role: discord.Role, clan_name: str | None = None) -> None:
+        """Reorders all clan roles to sit directly above a specified server level role (Staff/Admins only)."""
         if interaction.guild_id is None or interaction.guild is None:
             await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
             return
 
+        # Check if user is Staff/Admin with Manage Roles or Administrator permissions
+        member = interaction.guild.get_member(interaction.user.id)
+        is_staff = member and (member.guild_permissions.administrator or member.guild_permissions.manage_roles)
+        
+        if not is_staff:
+            await interaction.response.send_message("❌ Only Server Staff & Administrators with 'Manage Roles' permission can reorder clan roles.", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
         async with get_db_session() as session:
-            membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
-            if not membership or membership.clan.owner_id != interaction.user.id:
-                await interaction.followup.send("❌ Only the Clan Leader can reorder clan roles.", ephemeral=True)
+            if clan_name:
+                clan_res = await session.execute(
+                    select(Clan).filter_by(guild_id=interaction.guild_id).filter(Clan.name.ilike(clan_name.strip()))
+                )
+                clan = clan_res.scalar_one_or_none()
+            else:
+                membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
+                clan = membership.clan if membership else None
+                if not clan:
+                    clan_res = await session.execute(
+                        select(Clan).filter_by(guild_id=interaction.guild_id, approved=True)
+                    )
+                    clan = clan_res.scalars().first()
+
+            if not clan:
+                await interaction.followup.send("❌ No matching approved clan found in this server. Please specify `clan_name`.", ephemeral=True)
                 return
 
             roles_result = await session.execute(
-                select(ClanRole).filter_by(clan_id=membership.clan_id).order_by(ClanRole.hierarchy_level.asc())
+                select(ClanRole).filter_by(clan_id=clan.id).order_by(ClanRole.hierarchy_level.asc())
             )
             clan_roles = list(roles_result.scalars())
             if not clan_roles:
-                await interaction.followup.send("❌ No clan roles found.", ephemeral=True)
+                await interaction.followup.send(f"❌ No clan roles found for clan **{clan.name}**.", ephemeral=True)
                 return
 
             target_pos = highest_level_role.position + 1
@@ -1621,15 +1646,15 @@ class ClanGroup(app_commands.Group):
                     d_role = discord.utils.get(interaction.guild.roles, name=crole.role_name)
                 if d_role:
                     try:
-                        await d_role.edit(position=target_pos, reason="Journey Clan Role Reorder above level role")
+                        await d_role.edit(position=target_pos, reason="Journey Staff Clan Role Reorder above level role")
                         reordered_summary.append(f"• **{crole.role_name}** ({d_role.mention}) ➔ Position `{target_pos}`")
                         target_pos += 1
                     except discord.Forbidden:
                         reordered_summary.append(f"• **{crole.role_name}** (⚠️ Bot role is placed below this role in Server Settings -> Roles)")
 
             embed = discord.Embed(
-                title="📶 Clan Roles Reordered",
-                description=f"Successfully placed all clan roles directly above **{highest_level_role.mention}**:\n\n" + "\n".join(reversed(reordered_summary)),
+                title=f"📶 Clan Roles Reordered ({clan.name})",
+                description=f"Staff successfully placed all **{clan.name}** clan roles directly above **{highest_level_role.mention}**:\n\n" + "\n".join(reversed(reordered_summary)),
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed, ephemeral=True)

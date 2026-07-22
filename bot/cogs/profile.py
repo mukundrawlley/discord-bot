@@ -17,6 +17,8 @@ class Profile(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="profile", description="Displays yours or another member's profile card.")
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.describe(member="The member whose profile you want to inspect.")
     async def profile_command(self, interaction: discord.Interaction, member: discord.Member | None = None) -> None:
         """Renders the leveling stats, Master Path selection, and ranks for a user."""

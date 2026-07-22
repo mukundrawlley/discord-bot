@@ -216,6 +216,8 @@ class Leaderboards(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="leaderboard", description="Displays the leaderboard rankings.")
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.describe(
         type="The type of leaderboard to display.",
         timeframe="The timeframe filter (applicable to XP)."

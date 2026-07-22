@@ -10,6 +10,8 @@ class General(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="help", description="Displays a list of all available commands.")
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def help_command(self, interaction: discord.Interaction) -> None:
         """Sends a beautiful menu containing all user and administrative slash commands."""
         embed = discord.Embed(

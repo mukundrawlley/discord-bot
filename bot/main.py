@@ -359,9 +359,9 @@ class JourneyBot(commands.Bot):
 
         # 4. Synchronize Commands
         try:
-            # Always sync globally so user-installable (personal) commands register
+            # Synchronize server-only slash commands (user installation disabled to prevent duplicate commands)
             await self.tree.sync()
-            logger.info("Synchronized global slash commands.")
+            logger.info("Synchronized global server-only slash commands.")
 
             # If test guild is configured, clear its local commands so they don't duplicate global ones
             if settings.TEST_GUILD_ID:

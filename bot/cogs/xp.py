@@ -211,8 +211,20 @@ class XP(commands.Cog):
     # -------------------------------------------------------------------------
     # Slash Groups and Commands
     # -------------------------------------------------------------------------
-    xp_group = app_commands.Group(name="xp", description="XP management commands.")
-    level_group = app_commands.Group(name="level", description="Level management commands.")
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    class XPGroup(app_commands.Group):
+        def __init__(self):
+            super().__init__(name="xp", description="XP management commands.")
+
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    class LevelGroup(app_commands.Group):
+        def __init__(self):
+            super().__init__(name="level", description="Level management commands.")
+
+    xp_group = XPGroup()
+    level_group = LevelGroup()
 
     @xp_group.command(name="view", description="Quickly checks user XP progress statistics.")
     @app_commands.describe(member="The member to view statistics for.")

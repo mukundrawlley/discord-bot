@@ -117,8 +117,20 @@ class Paths(commands.Cog):
     # -------------------------------------------------------------------------
     # Slash Command Group
     # -------------------------------------------------------------------------
-    path_group = app_commands.Group(name="path", description="Master Path management commands.")
-    rank_group = app_commands.Group(name="rank", description="Path Rank progression rewards configuration.")
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    class PathGroup(app_commands.Group):
+        def __init__(self):
+            super().__init__(name="path", description="Master Path management commands.")
+
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    class RankGroup(app_commands.Group):
+        def __init__(self):
+            super().__init__(name="rank", description="Path Rank progression rewards configuration.")
+
+    path_group = PathGroup()
+    rank_group = RankGroup()
 
     @rank_group.command(name="view", description="Displays current level and Path Rank details.")
     @app_commands.describe(member="The member to view rank details for.")
