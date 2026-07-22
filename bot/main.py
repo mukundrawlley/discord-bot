@@ -344,7 +344,7 @@ class JourneyBot(commands.Bot):
 
         # 2. Load Cogs
         logger.info("Loading extensions...")
-        cogs = ["general", "xp", "paths", "profile", "leaderboards", "clans"]
+        cogs = ["general", "xp", "paths", "profile", "leaderboards", "clans", "bot_management"]
         for cog in cogs:
             try:
                 await self.load_extension(f"bot.cogs.{cog}")
