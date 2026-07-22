@@ -1884,6 +1884,61 @@ class ClanGroup(app_commands.Group):
                 view=view
             )
 
+    @app_commands.command(name="pin", description="Pins a message in the clan's private text channel.")
+    @app_commands.describe(message_id="The ID or link of the message to pin.")
+    async def clan_pin(self, interaction: discord.Interaction, message_id: str) -> None:
+        """Pins a message in the clan's private text channel."""
+        if interaction.guild_id is None or interaction.guild is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+
+        try:
+            msg_id_int = int(message_id.strip().split('/')[-1])
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid Message ID or Link. Please copy the numeric Message ID or Message Link.", ephemeral=True)
+            return
+
+        async with get_db_session() as session:
+            membership = await get_member_membership(session, interaction.guild_id, interaction.user.id)
+            if not membership:
+                await interaction.response.send_message("❌ You are not in a clan.", ephemeral=True)
+                return
+
+            clan = membership.clan
+            if not clan.approved:
+                await interaction.response.send_message("❌ This clan is pending Staff Approval and its features are locked.", ephemeral=True)
+                return
+
+            member_obj = interaction.guild.get_member(interaction.user.id)
+            is_leader = clan.owner_id == interaction.user.id
+            is_staff = member_obj and (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_messages)
+
+            if not is_leader and not is_staff:
+                if not (membership.role and membership.role.permissions and getattr(membership.role.permissions, "can_manage_messages", False)):
+                    await interaction.response.send_message("❌ Only Clan Leaders, Officers, or Staff can pin messages.", ephemeral=True)
+                    return
+
+            if not clan.discord_text_channel_id:
+                await interaction.response.send_message("❌ Your clan does not have a private text channel configured.", ephemeral=True)
+                return
+
+            text_channel = interaction.guild.get_channel(clan.discord_text_channel_id)
+            if not isinstance(text_channel, discord.TextChannel):
+                await interaction.response.send_message("❌ Could not find your clan's private text channel.", ephemeral=True)
+                return
+
+            try:
+                msg = await text_channel.fetch_message(msg_id_int)
+                await msg.pin(reason=f"Journey Clan Pin requested by {interaction.user.display_name}")
+            except discord.NotFound:
+                await interaction.response.send_message(f"❌ Message with ID `{msg_id_int}` was not found in {text_channel.mention}.", ephemeral=True)
+                return
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ The bot lacks 'Manage Messages' permission to pin this message.", ephemeral=True)
+                return
+
+        await interaction.response.send_message(f"📌 Successfully pinned message ([Jump to Message]({msg.jump_url})) in {text_channel.mention}!")
+
     @app_commands.command(name="permissions", description="Configures permissions for a specific role (Leader only).")
     @app_commands.describe(role_name="The name of the role to customize.")
     async def clan_permissions(self, interaction: discord.Interaction, role_name: str) -> None:
