@@ -332,9 +332,14 @@ class XP(commands.Cog):
         rank_msg_mention_user: bool | None = None,
         rank_msg_mention_role: discord.Role | None = None
     ) -> None:
-        """Updates server-specific settings parameters for XP leveling."""
+        """Admin helper command to configure settings."""
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
+
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
 
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
@@ -465,6 +470,11 @@ class XP(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
 
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
+
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
             if not guild.settings.xp_enabled:
@@ -502,6 +512,11 @@ class XP(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
+
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
 
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
@@ -557,6 +572,11 @@ class XP(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
+
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
 
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)

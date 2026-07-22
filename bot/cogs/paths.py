@@ -275,6 +275,12 @@ class Paths(commands.Cog):
         """Admin command to register a Master Path."""
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
+
+        # Check Admin / Staff permissions
+        member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member or not (member.guild_permissions.administrator or member.guild_permissions.manage_guild or member.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
         
         # Validate hex color
         color_val = None
@@ -331,6 +337,11 @@ class Paths(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
         
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
+
         async with get_db_session() as session:
             target_path = await PathService.get_path_by_name(session, guild_id, path)
             if not target_path:
@@ -365,6 +376,11 @@ class Paths(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
         
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
+
         async with get_db_session() as session:
             target_path = await PathService.get_path_by_name(session, guild_id, path)
             if not target_path:
@@ -409,6 +425,11 @@ class Paths(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
         
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
+        
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
             settings = guild.settings
@@ -452,6 +473,11 @@ class Paths(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
         
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
+
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
             settings = guild.settings
@@ -501,6 +527,11 @@ class Paths(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
         
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
+
         async with get_db_session() as session:
             target_path = await PathService.get_path_by_name(session, guild_id, path)
             if not target_path:
@@ -585,6 +616,12 @@ class Paths(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
+        
+        member_obj = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
+
         rank_name = name or role.name
         
         async with get_db_session() as session:
