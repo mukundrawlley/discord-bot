@@ -10,6 +10,8 @@ from bot.services.database_service import DatabaseService
 from bot.services.path_service import PathService
 from bot.models.path import MasterPath
 from bot.models.rank import PathRank
+from bot.models.user import UserGuildStats
+from bot.models.guild import Guild
 
 logger = logging.getLogger("Journey.PathsCog")
 
@@ -591,6 +593,105 @@ class Paths(commands.Cog):
                 
             await interaction.followup.send(embed=embed)
 
+    @path_group.command(name="repair", description="[Admin Only] Audits and syncs path roles and missing level reward roles for all members.")
+    @app_commands.default_permissions(manage_guild=True)
+    async def path_repair_command(self, interaction: discord.Interaction) -> None:
+        """Audits all server members, awarding missing level rank rewards and syncing Master Path roles."""
+        if interaction.guild_id is None or interaction.guild is None:
+            await interaction.response.send_message("❌ This command must be run inside a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        guild_id = interaction.guild_id
+
+        member_obj = interaction.guild.get_member(interaction.user.id)
+        if not member_obj or not (member_obj.guild_permissions.administrator or member_obj.guild_permissions.manage_guild or member_obj.guild_permissions.manage_roles):
+            await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
+            return
+
+        async with get_db_session() as session:
+            guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            settings = guild.settings
+
+            # Fetch all user stats with active master paths
+            users_res = await session.execute(
+                select(UserGuildStats)
+                .filter_by(guild_id=guild_id)
+                .filter(UserGuildStats.master_path_id.isnot(None))
+            )
+            user_stats_list = list(users_res.scalars())
+
+            members_scanned = 0
+            members_repaired = 0
+            roles_added_total = 0
+            roles_removed_total = 0
+            repaired_summary = []
+
+            for stats in user_stats_list:
+                member = interaction.guild.get_member(stats.user_id)
+                if not member:
+                    continue
+
+                members_scanned += 1
+                roles_to_add, roles_to_remove = await PathService.evaluate_roles_for_level(
+                    session, stats, stats.level, settings
+                )
+
+                add_objs = [interaction.guild.get_role(rid) for rid in roles_to_add if interaction.guild.get_role(rid)]
+                remove_objs = [interaction.guild.get_role(rid) for rid in roles_to_remove if interaction.guild.get_role(rid)]
+
+                remove_objs = [r for r in remove_objs if r in member.roles]
+                add_objs = [r for r in add_objs if r not in member.roles]
+
+                changes_made = False
+                added_names = []
+                removed_names = []
+
+                if remove_objs:
+                    try:
+                        await member.remove_roles(*remove_objs, reason="Journey Path Repair: Remove unearned or obsolete rank roles")
+                        roles_removed_total += len(remove_objs)
+                        removed_names = [r.name for r in remove_objs]
+                        changes_made = True
+                    except discord.Forbidden:
+                        pass
+
+                if add_objs:
+                    try:
+                        await member.add_roles(*add_objs, reason="Journey Path Repair: Award missing path/rank roles")
+                        roles_added_total += len(add_objs)
+                        added_names = [r.name for r in add_objs]
+                        changes_made = True
+                    except discord.Forbidden:
+                        pass
+
+                if changes_made:
+                    members_repaired += 1
+                    detail_parts = []
+                    if added_names:
+                        detail_parts.append(f"➕ Added: {', '.join(added_names)}")
+                    if removed_names:
+                        detail_parts.append(f"➖ Removed: {', '.join(removed_names)}")
+                    repaired_summary.append(f"• **{member.display_name}** (Lvl {stats.level}): {' | '.join(detail_parts)}")
+
+            embed = discord.Embed(
+                title="⚙️ Master Path & Rank Rewards Repair Audit",
+                color=discord.Color.green() if members_repaired > 0 else discord.Color.blue()
+            )
+            embed.add_field(name="👥 Members Scanned", value=f"`{members_scanned}`", inline=True)
+            embed.add_field(name="🔧 Members Repaired", value=f"`{members_repaired}`", inline=True)
+            embed.add_field(name="✨ Total Roles Given / Stripped", value=f"➕ `{roles_added_total}` / ➖ `{roles_removed_total}`", inline=True)
+
+            if repaired_summary:
+                summary_text = "\n".join(repaired_summary[:15])
+                if len(repaired_summary) > 15:
+                    summary_text += f"\n*...and {len(repaired_summary) - 15} more members.*"
+                embed.add_field(name="📋 Repair Details", value=summary_text, inline=False)
+            else:
+                embed.description = "✅ All member Master Path roles and rank level rewards are already up to date! No breakage found."
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
     # -------------------------------------------------------------------------
     # Admin Rank Rewards Management Commands
     # -------------------------------------------------------------------------
@@ -627,6 +728,9 @@ class Paths(commands.Cog):
         rank_name = name or role.name
         
         async with get_db_session() as session:
+            guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            settings = guild.settings
+
             target_path = await PathService.get_path_by_name(session, guild_id, path)
             if not target_path:
                 await interaction.followup.send(f"❌ Master Path '{path}' not found.", ephemeral=True)
