@@ -12,6 +12,8 @@ from bot.models.path import MasterPath
 from bot.models.rank import PathRank
 from bot.models.user import UserGuildStats
 from bot.models.guild import Guild
+from bot.services.xp_service import XPService
+from bot.utils.curves import get_curve
 
 logger = logging.getLogger("Journey.PathsCog")
 
@@ -169,6 +171,61 @@ class Paths(commands.Cog):
                 f"• **Master Path**: {path_name}\n"
                 f"• **Path Rank**: {rank_name}"
             )
+
+    @rank_group.command(name="requirements", description="Checks the exact XP required for each leveled role in a specific path.")
+    @app_commands.describe(path="Select the Master Path to inspect.")
+    @app_commands.autocomplete(path=_path_autocomplete)
+    async def rank_requirements_command(self, interaction: discord.Interaction, path: str) -> None:
+        """Displays exact XP requirements for each rank role in a selected path."""
+        await interaction.response.defer()
+        guild_id = interaction.guild_id
+
+        async with get_db_session() as session:
+            guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            settings = guild.settings
+            curve = get_curve(settings.level_curve)
+
+            target_path = await PathService.get_path_by_name(session, guild_id, path)
+            if not target_path:
+                await interaction.followup.send(f"❌ Master Path '{path}' not found.", ephemeral=True)
+                return
+
+            ranks_res = await session.execute(
+                select(PathRank)
+                .filter_by(path_id=target_path.id)
+                .order_by(PathRank.required_level.asc())
+            )
+            ranks = list(ranks_res.scalars())
+
+            if not ranks:
+                await interaction.followup.send(f"⚠️ No rank progression reward roles are currently set up for **{target_path.name}**.")
+                return
+
+            path_role = interaction.guild.get_role(target_path.discord_role_id) if interaction.guild else None
+            path_role_str = path_role.mention if path_role else f"ID: {target_path.discord_role_id}"
+
+            embed = discord.Embed(
+                title=f"📊 Rank Role XP Requirements: {target_path.name}",
+                description=(
+                    f"**Base Path Role:** {path_role_str}\n"
+                    f"**Active Level Curve:** `{settings.level_curve.title()}` ({settings.xp_multiplier}x Multiplier)"
+                ),
+                color=target_path.color or discord.Color.gold()
+            )
+
+            for rank in ranks:
+                role = interaction.guild.get_role(rank.discord_role_id) if interaction.guild else None
+                role_str = role.mention if role else f"Role ID: {rank.discord_role_id}"
+                cum_xp = curve.cumulative_xp_for_level(rank.required_level, XPService.BASE_XP, float(settings.xp_multiplier))
+
+                embed.add_field(
+                    name=f"🎖️ {rank.display_name} (Level {rank.required_level})",
+                    value=f"• **Role:** {role_str}\n• **Total XP Required:** `{cum_xp:,} XP`",
+                    inline=False
+                )
+
+            embed.set_footer(text="Earn XP by chatting or completing activities to unlock these rank roles!")
+            await interaction.followup.send(embed=embed)
 
     @path_group.command(name="list", description="Lists all Master Paths configured in the server.")
     async def path_list_command(self, interaction: discord.Interaction) -> None:
@@ -560,6 +617,10 @@ class Paths(commands.Cog):
         guild_id = interaction.guild_id
         
         async with get_db_session() as session:
+            guild = await DatabaseService.get_or_create_guild(session, guild_id)
+            settings = guild.settings
+            curve = get_curve(settings.level_curve)
+
             target_path = await PathService.get_path_by_name(session, guild_id, path)
             if not target_path:
                 await interaction.followup.send(f"❌ Master Path '{path}' not found.")
@@ -578,16 +639,17 @@ class Paths(commands.Cog):
                 
             embed = discord.Embed(
                 title=f"🏆 Ranks List - {target_path.name}",
-                description="Progression rewards earned by leveling up:",
+                description=f"Active Curve: `{settings.level_curve.title()}` ({settings.xp_multiplier}x Multiplier)",
                 color=target_path.color or discord.Color.blurple()
             )
             
             for rank in ranks:
                 role = interaction.guild.get_role(rank.discord_role_id)
                 role_str = role.mention if role else f"Role ID: {rank.discord_role_id}"
+                xp_needed = curve.cumulative_xp_for_level(rank.required_level, XPService.BASE_XP, float(settings.xp_multiplier))
                 embed.add_field(
                     name=f"Level {rank.required_level}: {rank.display_name}",
-                    value=f"• Role: {role_str}",
+                    value=f"• **Role**: {role_str}\n• **Required XP**: `{xp_needed:,} XP`",
                     inline=False
                 )
                 
