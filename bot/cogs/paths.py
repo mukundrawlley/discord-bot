@@ -183,7 +183,7 @@ class Paths(commands.Cog):
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
             settings = guild.settings
-            curve = get_curve(settings.level_curve)
+            curve = get_curve(settings.xp_curve)
 
             target_path = await PathService.get_path_by_name(session, guild_id, path)
             if not target_path:
@@ -208,7 +208,7 @@ class Paths(commands.Cog):
                 title=f"📊 Rank Role XP Requirements: {target_path.name}",
                 description=(
                     f"**Base Path Role:** {path_role_str}\n"
-                    f"**Active Level Curve:** `{settings.level_curve.title()}` ({settings.xp_multiplier}x Multiplier)"
+                    f"**Active Level Curve:** `{settings.xp_curve.title()}` ({settings.xp_multiplier}x Multiplier)"
                 ),
                 color=target_path.color or discord.Color.gold()
             )
@@ -619,7 +619,7 @@ class Paths(commands.Cog):
         async with get_db_session() as session:
             guild = await DatabaseService.get_or_create_guild(session, guild_id)
             settings = guild.settings
-            curve = get_curve(settings.level_curve)
+            curve = get_curve(settings.xp_curve)
 
             target_path = await PathService.get_path_by_name(session, guild_id, path)
             if not target_path:
@@ -639,7 +639,7 @@ class Paths(commands.Cog):
                 
             embed = discord.Embed(
                 title=f"🏆 Ranks List - {target_path.name}",
-                description=f"Active Curve: `{settings.level_curve.title()}` ({settings.xp_multiplier}x Multiplier)",
+                description=f"Active Curve: `{settings.xp_curve.title()}` ({settings.xp_multiplier}x Multiplier)",
                 color=target_path.color or discord.Color.blurple()
             )
             
