@@ -259,16 +259,16 @@ class Paths(commands.Cog):
     @path_group.command(name="create", description="[Admin Only] Creates a new Master Path.")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(
-        name="Path name.",
         role="Associated Discord role.",
+        name="Optional: Custom path name (Defaults to role name if omitted).",
         description="Path details.",
         color_hex="Embed display color in Hex (e.g. FF5500)."
     )
     async def path_create_command(
         self,
         interaction: discord.Interaction,
-        name: str,
         role: discord.Role,
+        name: str | None = None,
         description: str | None = None,
         color_hex: str | None = None
     ) -> None:
@@ -281,6 +281,8 @@ class Paths(commands.Cog):
         if not member or not (member.guild_permissions.administrator or member.guild_permissions.manage_guild or member.guild_permissions.manage_roles):
             await interaction.followup.send("❌ Only Server Administrators and Staff with 'Manage Server' or 'Manage Roles' permission can run this command.", ephemeral=True)
             return
+
+        path_name = (name.strip() if name and name.strip() else role.name)
         
         # Validate hex color
         color_val = None
@@ -295,14 +297,14 @@ class Paths(commands.Cog):
             await DatabaseService.get_or_create_guild(session, guild_id)
             
             # Check duplicates
-            existing = await PathService.get_path_by_name(session, guild_id, name)
+            existing = await PathService.get_path_by_name(session, guild_id, path_name)
             if existing:
-                await interaction.followup.send("❌ A path with that name already exists.", ephemeral=True)
+                await interaction.followup.send(f"❌ A path named **'{path_name}'** already exists.", ephemeral=True)
                 return
                 
             path = MasterPath(
                 guild_id=guild_id,
-                name=name,
+                name=path_name,
                 discord_role_id=role.id,
                 description=description,
                 color=color_val
@@ -310,7 +312,7 @@ class Paths(commands.Cog):
             session.add(path)
             await session.flush()
             
-        await interaction.followup.send(f"✅ Created Master Path **{name}** mapped to {role.mention}.", ephemeral=True)
+        await interaction.followup.send(f"✅ Created Master Path **{path_name}** mapped to {role.mention}.", ephemeral=True)
 
     @path_group.command(name="edit", description="[Admin Only] Edits an existing Master Path.")
     @app_commands.default_permissions(manage_guild=True)
